@@ -260,6 +260,8 @@ public final class Translator {
                 }
             }
         }
+        // Lix appends nix=/__corepkgs__ to the search path, for <nix/fetchurl.nix>.
+        if (name.startsWith("nix/") && NixContext.corepkg(name.substring(4)) != null) return "/__corepkgs__/" + name.substring(4);
         throw error("file '" + name + "' was not found in the Nix search path", sp.pos());
     }
 

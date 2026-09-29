@@ -14,7 +14,7 @@ public final class Values {
         if (v instanceof Long) return "an integer";
         if (v instanceof Double) return "a float";
         if (v instanceof Boolean) return "a Boolean";
-        if (v instanceof String) return "a string";
+        if (v instanceof String || v instanceof NixString) return "a string";
         if (v instanceof NixPath) return "a path";
         if (v instanceof NixNull) return "null";
         if (v instanceof NixAttrs) return "a set";
@@ -32,7 +32,7 @@ public final class Values {
         if (v instanceof Long) return "int";
         if (v instanceof Double) return "float";
         if (v instanceof Boolean) return "bool";
-        if (v instanceof String) return "string";
+        if (v instanceof String || v instanceof NixString) return "string";
         if (v instanceof NixPath) return "path";
         if (v instanceof NixNull) return "null";
         if (v instanceof NixAttrs) return "set";
@@ -63,10 +63,19 @@ public final class Values {
         throw NixException.typeError(f, "a list", null);
     }
 
+    /** The string value, discarding any context. */
     public static String string(Object v) {
         Object f = Thunk.force(v);
         if (f instanceof String s) return s;
+        if (f instanceof NixString s) return s.value;
         throw NixException.typeError(f, "a string", null);
+    }
+
+    /** The string value; its context is added to {@code context}. */
+    public static String string(Object v, java.util.Set<String> context) {
+        Object f = Thunk.force(v);
+        NixString.addContext(f, context);
+        return string(f);
     }
 
     public static long integer(Object v) {
@@ -90,23 +99,37 @@ public final class Values {
 
     // -------------------------------------------------------------- coercions
 
+    /** Coercion without context tracking: {@code toStringMode} is {@code builtins.toString}'s rules. */
+    public static String coerceToString(Object v, boolean toStringMode, Node location) {
+        return coerce(v, toStringMode, false, null, location);
+    }
+
     /**
-     * Coerce to a string. With {@code toStringMode} (i.e. {@code builtins.toString}) numbers,
-     * booleans, null and lists are accepted too; interpolation only takes strings, paths and sets
-     * with {@code __toString} or {@code outPath}.
+     * Port of CppNix's {@code coerceToString}. {@code coerceMore} also accepts numbers, booleans,
+     * null and lists ({@code toString}, derivation attributes); {@code copyToStore} turns paths into
+     * store paths (interpolation, derivation attributes). Context goes into {@code context}.
      */
     @TruffleBoundary
-    public static String coerceToString(Object v, boolean toStringMode, Node location) {
+    public static String coerce(Object v, boolean coerceMore, boolean copyToStore, java.util.Set<String> context, Node location) {
         Object f = Thunk.force(v);
         if (f instanceof String s) return s;
-        if (f instanceof NixPath p) return p.path;
+        if (f instanceof NixString s) {
+            NixString.addContext(s, context);
+            return s.value;
+        }
+        if (f instanceof NixPath p) {
+            if (!copyToStore) return p.path;
+            String storePath = nixtruffle.NixContext.get(null).copyPathToStore(p.path, location);
+            if (context != null) context.add(storePath);
+            return storePath;
+        }
         if (f instanceof NixAttrs a) {
             Object toString = a.get("__toString");
-            if (toString != null) return coerceToString(Apply.apply(toString, a, location), toStringMode, location);
+            if (toString != null) return coerce(Apply.apply(toString, a, location), coerceMore, copyToStore, context, location);
             Object outPath = a.get("outPath");
-            if (outPath != null) return coerceToString(outPath, toStringMode, location);
+            if (outPath != null) return coerce(outPath, coerceMore, copyToStore, context, location);
         }
-        if (toStringMode) {
+        if (coerceMore) {
             if (f instanceof Long l) return Long.toString(l);
             if (f instanceof Double d) return String.format(Locale.ROOT, "%.6f", d);
             if (f instanceof Boolean b) return b ? "1" : "";
@@ -114,8 +137,10 @@ public final class Values {
             if (f instanceof NixList l) {
                 StringBuilder sb = new StringBuilder();
                 for (int i = 0; i < l.items.length; i++) {
-                    if (i > 0) sb.append(' ');
-                    sb.append(coerceToString(l.forceAt(i), true, location));
+                    Object item = l.forceAt(i);
+                    sb.append(coerce(item, true, copyToStore, context, location));
+                    // "!!! not quite correct" in CppNix: no separator after an empty list.
+                    if (i < l.items.length - 1 && !(item instanceof NixList inner && inner.size() == 0)) sb.append(' ');
                 }
                 return sb.toString();
             }
@@ -134,7 +159,7 @@ public final class Values {
         if ((x instanceof Long || x instanceof Double) && (y instanceof Long || y instanceof Double)) {
             return ((Number) x).doubleValue() == ((Number) y).doubleValue();
         }
-        if (x instanceof String s && y instanceof String t) return s.equals(t);
+        if (NixString.is(x) && NixString.is(y)) return NixString.value(x).equals(NixString.value(y));
         if (x instanceof NixPath p && y instanceof NixPath q) return p.path.equals(q.path);
         if (x instanceof Boolean p && y instanceof Boolean q) return p.booleanValue() == q.booleanValue();
         if (x instanceof NixNull && y instanceof NixNull) return true;
@@ -163,7 +188,7 @@ public final class Values {
         if ((x instanceof Long || x instanceof Double) && (y instanceof Long || y instanceof Double)) {
             return Double.compare(((Number) x).doubleValue(), ((Number) y).doubleValue());
         }
-        if (x instanceof String s && y instanceof String t) return s.compareTo(t);
+        if (NixString.is(x) && NixString.is(y)) return NixString.value(x).compareTo(NixString.value(y));
         if (x instanceof NixPath p && y instanceof NixPath q) return p.path.compareTo(q.path);
         if (x instanceof NixList l && y instanceof NixList m) {
             for (int i = 0; ; i++) {

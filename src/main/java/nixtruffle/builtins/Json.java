@@ -7,6 +7,7 @@ import nixtruffle.runtime.NixFunction;
 import nixtruffle.runtime.NixList;
 import nixtruffle.runtime.NixNull;
 import nixtruffle.runtime.NixPath;
+import nixtruffle.runtime.NixString;
 import nixtruffle.runtime.Thunk;
 import nixtruffle.runtime.Values;
 
@@ -18,31 +19,59 @@ import java.util.TreeMap;
 final class Json {
     private Json() {}
 
-    static String toJSON(Object value) {
+    /** {@code builtins.toJSON}: the result carries the context of all strings inside. */
+    static Object toJSON(Object value) {
+        java.util.Set<String> context = new java.util.TreeSet<>();
+        return NixString.make(toJSON(value, context, true), context);
+    }
+
+    /** CppNix's printValueAsJSON; paths are copied to the store if {@code copyToStore}. */
+    static String toJSON(Object value, java.util.Set<String> context, boolean copyToStore) {
         StringBuilder sb = new StringBuilder();
-        write(Thunk.force(value), sb);
+        write(Thunk.force(value), sb, context, copyToStore);
         return sb.toString();
     }
 
-    private static void write(Object v, StringBuilder sb) {
+    /** A JSON object from already-encoded members (sorted by key, like nlohmann::json). */
+    static String object(java.util.SortedMap<String, String> members) {
+        StringBuilder sb = new StringBuilder("{");
+        boolean first = true;
+        for (var e : members.entrySet()) {
+            if (!first) sb.append(',');
+            first = false;
+            quote(e.getKey(), sb);
+            sb.append(':').append(e.getValue());
+        }
+        return sb.append('}').toString();
+    }
+
+    private static void write(Object v, StringBuilder sb, java.util.Set<String> context, boolean copyToStore) {
         switch (v) {
             case NixNull n -> sb.append("null");
             case Boolean b -> sb.append(b);
             case Long l -> sb.append(l);
-            case Double d -> sb.append(d == Math.rint(d) && !Double.isInfinite(d) && Math.abs(d) < 1e15 ? String.valueOf(d) : Double.toString(d));
+            case Double d -> sb.append(formatDouble(d));
             case String s -> quote(s, sb);
-            case NixPath p -> quote(p.path, sb);
+            case NixString s -> {
+                NixString.addContext(s, context);
+                quote(s.value, sb);
+            }
+            case NixPath p -> quote(Values.coerce(p, false, copyToStore, context, null), sb);
             case NixList l -> {
                 sb.append('[');
                 for (int i = 0; i < l.size(); i++) {
                     if (i > 0) sb.append(',');
-                    write(l.forceAt(i), sb);
+                    write(l.forceAt(i), sb, context, copyToStore);
                 }
                 sb.append(']');
             }
             case NixAttrs a -> {
-                if (a.getRaw("__toString") != null || a.getRaw("outPath") != null) {
-                    quote(Values.coerceToString(a, false, null), sb);
+                if (a.getRaw("__toString") != null) {
+                    quote(Values.coerce(a, false, false, context, null), sb);
+                    return;
+                }
+                if (a.getRaw("outPath") != null) {
+                    write(a.get("outPath"), sb, context, copyToStore);
                     return;
                 }
                 sb.append('{');
@@ -50,7 +79,7 @@ final class Json {
                     if (i > 0) sb.append(',');
                     quote(a.keys[i], sb);
                     sb.append(':');
-                    write(a.forceAt(i), sb);
+                    write(a.forceAt(i), sb, context, copyToStore);
                 }
                 sb.append('}');
             }
@@ -58,9 +87,9 @@ final class Json {
             default -> {
                 Object[] items = Foreign.isForeign(v) ? Foreign.asArray(v) : null;
                 if (items != null) {
-                    write(new NixList(items), sb);
+                    write(new NixList(items), sb, context, copyToStore);
                 } else if (Foreign.isForeign(v) && Foreign.hasMembers(v)) {
-                    write(Foreign.asAttrs(v), sb);
+                    write(Foreign.asAttrs(v), sb, context, copyToStore);
                 } else {
                     throw NixException.error("cannot convert " + Values.typeName(v) + " to JSON", null);
                 }
@@ -68,7 +97,33 @@ final class Json {
         }
     }
 
-    private static void quote(String s, StringBuilder sb) {
+    /** nlohmann::json's double formatting: shortest round-trip digits, "1.0", "1e+20", "1.5e-07". */
+    static String formatDouble(double d) {
+        if (Double.isNaN(d) || Double.isInfinite(d)) return "null";
+        if (d == 0) return 1 / d < 0 ? "-0.0" : "0.0";
+        java.math.BigDecimal bd = new java.math.BigDecimal(Double.toString(Math.abs(d))).stripTrailingZeros();
+        String digits = bd.unscaledValue().toString();
+        int k = digits.length();
+        int n = k - bd.scale();
+        StringBuilder sb = new StringBuilder(d < 0 ? "-" : "");
+        if (k <= n && n <= 15) {
+            sb.append(digits).append("0".repeat(n - k)).append(".0");
+        } else if (0 < n && n <= 15) {
+            sb.append(digits, 0, n).append('.').append(digits, n, k);
+        } else if (-4 < n && n <= 0) {
+            sb.append("0.").append("0".repeat(-n)).append(digits);
+        } else {
+            sb.append(digits.charAt(0));
+            if (k > 1) sb.append('.').append(digits, 1, k);
+            int e = n - 1;
+            sb.append('e').append(e < 0 ? '-' : '+');
+            if (Math.abs(e) < 10) sb.append('0');
+            sb.append(Math.abs(e));
+        }
+        return sb.toString();
+    }
+
+    static void quote(String s, StringBuilder sb) {
         sb.append('"');
         for (int i = 0; i < s.length(); i++) {
             char c = s.charAt(i);

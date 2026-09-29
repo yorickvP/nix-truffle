@@ -26,6 +26,7 @@ public abstract class AttrKeyNode extends Node {
         public String execute(VirtualFrame frame) {
             Object v = expr.execute(frame);
             if (v instanceof String s) return s;
+            if (v instanceof nixtruffle.runtime.NixString s) return s.value;
             throw NixException.typeError(v, "a string", expr);
         }
     }

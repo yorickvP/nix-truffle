@@ -48,7 +48,11 @@ public final class AttrsNode extends NixNode {
         for (int i = 0; i < keys.length; i++) map.put(keys[i], vals[i]);
         for (int i = 0; i < dk.length; i++) {
             if (dk[i] instanceof NixNull) continue;
-            if (!(dk[i] instanceof String name)) throw NixException.typeError(dk[i], "a string", this);
+            if (!nixtruffle.runtime.NixString.is(dk[i])) throw NixException.typeError(dk[i], "a string", this);
+            if (dk[i] instanceof nixtruffle.runtime.NixString ctx) {
+                throw NixException.error("the string '" + ctx.value + "' is not allowed to refer to a store path (such as '" + ctx.context[0] + "')", this);
+            }
+            String name = nixtruffle.runtime.NixString.value(dk[i]);
             if (map.put(name, dv[i]) != null) throw NixException.error("dynamic attribute '" + name + "' already defined", this);
         }
         return NixAttrs.fromMap(map);

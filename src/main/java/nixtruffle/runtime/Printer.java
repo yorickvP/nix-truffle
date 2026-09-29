@@ -46,6 +46,7 @@ public final class Printer {
             case Double d -> sb.append(Values.formatFloat(d));
             case Boolean b -> sb.append(b);
             case String s -> quote(s, sb);
+            case NixString s -> quote(s.value, sb);
             case NixPath p -> sb.append(p.path);
             case NixNull n -> sb.append("null");
             case NixAttrs a -> printAttrs(a, sb);

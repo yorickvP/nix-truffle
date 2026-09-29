@@ -3,6 +3,7 @@ package nixtruffle.nodes;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.nodes.ExplodeLoop;
+import nixtruffle.runtime.NixString;
 import nixtruffle.runtime.Values;
 
 /** {@code "a ${b} c"}. */
@@ -20,9 +21,10 @@ public final class InterpolationNode extends NixNode {
     }
 
     @TruffleBoundary
-    private String concat(Object[] values) {
+    private Object concat(Object[] values) {
         StringBuilder sb = new StringBuilder();
-        for (Object v : values) sb.append(Values.coerceToString(v, false, this));
-        return sb.toString();
+        java.util.Set<String> context = new java.util.TreeSet<>();
+        for (Object v : values) sb.append(Values.coerce(v, false, true, context, this));
+        return NixString.make(sb.toString(), context);
     }
 }

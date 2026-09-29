@@ -14,6 +14,7 @@ import nixtruffle.runtime.NixLambda;
 import nixtruffle.runtime.NixList;
 import nixtruffle.runtime.NixNull;
 import nixtruffle.runtime.NixPath;
+import nixtruffle.runtime.NixString;
 import nixtruffle.runtime.Printer;
 import nixtruffle.runtime.ReplPrinter;
 import nixtruffle.runtime.Thunk;
@@ -27,6 +28,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.regex.Matcher;
@@ -55,7 +57,7 @@ public final class Builtins {
         return GLOBALS.get(name);
     }
 
-    private static void def(String name, int arity, Builtin.Impl impl) {
+    static void def(String name, int arity, Builtin.Impl impl) {
         BUILTINS.put(name, new Builtin(name, arity, impl));
     }
 
@@ -92,7 +94,8 @@ public final class Builtins {
         BUILTINS.put("true", true);
         BUILTINS.put("false", false);
         BUILTINS.put("null", NixNull.INSTANCE);
-        BUILTINS.put("nixVersion", "2.18.0-truffle");
+        // Pretend to be the Lix we compare against, so version-dependent nixpkgs code agrees.
+        BUILTINS.put("nixVersion", "2.18.3-lix");
         BUILTINS.put("langVersion", 6L);
         BUILTINS.put("currentSystem", System.getProperty("os.arch").replace("amd64", "x86_64") + "-" + System.getProperty("os.name").toLowerCase());
 
@@ -113,7 +116,7 @@ public final class Builtins {
         def("isInt", 1, a -> force(a[0]) instanceof Long);
         def("isFloat", 1, a -> force(a[0]) instanceof Double);
         def("isBool", 1, a -> force(a[0]) instanceof Boolean);
-        def("isString", 1, a -> force(a[0]) instanceof String);
+        def("isString", 1, a -> NixString.is(force(a[0])));
         def("isPath", 1, a -> force(a[0]) instanceof NixPath);
         def("isNull", 1, a -> force(a[0]) instanceof NixNull);
         def("isAttrs", 1, a -> force(a[0]) instanceof NixAttrs);
@@ -131,7 +134,7 @@ public final class Builtins {
         });
         def("trace", 2, a -> {
             Object msg = force(a[0]);
-            NixContext.get(null).err.println("trace: " + (msg instanceof String s ? s : Printer.show(msg, true)));
+            NixContext.get(null).err.println("trace: " + (NixString.is(msg) ? NixString.value(msg) : Printer.show(msg, true)));
             return force(a[1]);
         });
         def("throw", 1, a -> {
@@ -307,28 +310,37 @@ public final class Builtins {
         });
 
         // ----------------------------------------------------------- strings
-        def("toString", 1, a -> Values.coerceToString(a[0], true, null));
-        def("stringLength", 1, a -> (long) Values.coerceToString(a[0], false, null).getBytes(StandardCharsets.UTF_8).length);
+        def("toString", 1, a -> {
+            Set<String> context = new TreeSet<>();
+            return NixString.make(Values.coerce(a[0], true, false, context, null), context);
+        });
+        def("stringLength", 1, a -> (long) Values.coerce(a[0], false, true, null, null).getBytes(StandardCharsets.UTF_8).length);
         def("substring", 3, a -> {
             long start = integer(a[0]);
             long len = integer(a[1]);
-            String s = Values.coerceToString(a[2], false, null);
+            Set<String> context = new TreeSet<>();
+            String s = Values.coerce(a[2], false, true, context, null);
             if (start < 0) throw error("negative start position in 'substring'");
-            if (start >= s.length()) return "";
+            if (start >= s.length()) return NixString.make("", context);
             long end = len < 0 ? s.length() : Math.min(s.length(), start + len);
-            return s.substring((int) start, (int) end);
+            return NixString.make(s.substring((int) start, (int) end), context);
         });
         def("concatStringsSep", 2, a -> {
-            String sep = string(a[0]);
+            Set<String> context = new TreeSet<>();
+            String sep = string(a[0], context);
             StringBuilder sb = new StringBuilder();
             Object[] items = list(a[1]);
             for (int i = 0; i < items.length; i++) {
                 if (i > 0) sb.append(sep);
-                sb.append(Values.coerceToString(items[i], false, null));
+                sb.append(Values.coerce(items[i], false, true, context, null));
             }
-            return sb.toString();
+            return NixString.make(sb.toString(), context);
         });
-        def("replaceStrings", 3, a -> replaceStrings(list(a[0]), list(a[1]), string(a[2])));
+        def("replaceStrings", 3, a -> {
+            Set<String> context = new TreeSet<>();
+            String s = string(a[2], context);
+            return NixString.make(replaceStrings(list(a[0]), list(a[1]), s, context), context);
+        });
         def("match", 2, a -> {
             Matcher m = regex(string(a[0])).matcher(string(a[1]));
             return m.matches() ? groups(m) : NixNull.INSTANCE;
@@ -347,17 +359,18 @@ public final class Builtins {
             return new NixList(out.toArray());
         });
         def("baseNameOf", 1, a -> {
-            Object v = force(a[0]);
-            String s = Values.coerceToString(v, false, null);
+            Set<String> context = new TreeSet<>();
+            String s = Values.coerce(a[0], false, false, context, null);
             if (s.endsWith("/") && s.length() > 1) s = s.substring(0, s.length() - 1);
-            return s.substring(s.lastIndexOf('/') + 1);
+            return NixString.make(s.substring(s.lastIndexOf('/') + 1), context);
         });
         def("dirOf", 1, a -> {
             Object v = force(a[0]);
-            String s = Values.coerceToString(v, false, null);
+            Set<String> context = new TreeSet<>();
+            String s = Values.coerce(v, false, false, context, null);
             int slash = s.lastIndexOf('/');
             String dir = slash < 0 ? "." : slash == 0 ? "/" : s.substring(0, slash);
-            return v instanceof NixPath ? new NixPath(dir) : dir;
+            return v instanceof NixPath ? new NixPath(dir) : NixString.make(dir, context);
         });
         def("toJSON", 1, a -> Json.toJSON(a[0]));
         def("fromJSON", 1, a -> Json.fromJSON(string(a[0])));
@@ -403,20 +416,6 @@ public final class Builtins {
             return v;
         });
 
-        // ------------------------------------- string context (we have none)
-        def("unsafeDiscardStringContext", 1, a -> string(a[0]));
-        def("unsafeDiscardOutputDependency", 1, a -> string(a[0]));
-        def("addDrvOutputDependencies", 1, a -> string(a[0]));
-        def("appendContext", 2, a -> string(a[0]));
-        def("hasContext", 1, a -> {
-            string(a[0]);
-            return false;
-        });
-        def("getContext", 1, a -> {
-            string(a[0]);
-            return NixAttrs.EMPTY;
-        });
-
         // -------------------------------------------------------------- misc
         def("addErrorContext", 2, a -> force(a[1]));
         def("traceVerbose", 2, a -> force(a[1]));
@@ -434,6 +433,8 @@ public final class Builtins {
             }
             return set("name", s, "version", "");
         });
+        StoreBuiltins.install();
+
         def("hashString", 2, a -> {
             String algo = switch (string(a[0])) {
                 case "md5" -> "MD5";
@@ -458,9 +459,8 @@ public final class Builtins {
 
         // Store, derivations and fetchers are out of scope; they exist so that code mentioning them
         // still resolves (Nix resolves variables statically), and fail only when actually called.
-        for (String name : List.of("derivation", "derivationStrict", "placeholder", "fetchGit", "fetchMercurial",
-                "fetchTarball", "fetchTree", "fetchurl", "fromTOML", "scopedImport", "toFile", "path", "filterSource",
-                "storePath", "toXML", "findFile", "hashFile")) {
+        for (String name : List.of("fetchGit", "fetchMercurial", "fetchTarball", "fetchTree", "fetchurl", "fromTOML",
+                "scopedImport", "toXML", "findFile")) {
             def(name, 1, a -> {
                 throw error("builtins." + name + " is not supported by nix-truffle");
             });
@@ -514,7 +514,7 @@ public final class Builtins {
         return xs;
     }
 
-    private static String replaceStrings(Object[] from, Object[] to, String s) {
+    private static String replaceStrings(Object[] from, Object[] to, String s, Set<String> context) {
         if (from.length != to.length) throw error("'from' and 'to' arguments passed to builtins.replaceStrings have different lengths");
         String[] fromS = new String[from.length];
         for (int i = 0; i < from.length; i++) fromS[i] = string(from[i]);
@@ -525,7 +525,7 @@ public final class Builtins {
             for (int i = 0; i < fromS.length; i++) {
                 if (s.startsWith(fromS[i], p)) {
                     found = true;
-                    if (toS[i] == null) toS[i] = string(to[i]);
+                    if (toS[i] == null) toS[i] = string(to[i], context);
                     res.append(toS[i]);
                     if (fromS[i].isEmpty()) {
                         if (p < s.length()) res.append(s.charAt(p));
@@ -567,7 +567,7 @@ public final class Builtins {
         return new NixList(out);
     }
 
-    private static TruffleFile file(Object pathArg) {
+    static TruffleFile file(Object pathArg) {
         Object v = force(pathArg);
         String path = v instanceof NixPath p ? p.path : Values.coerceToString(v, false, null);
         return NixContext.get(null).env.getPublicTruffleFile(path);
@@ -576,7 +576,17 @@ public final class Builtins {
     /** {@code import}: .nix files are parsed and evaluated once; other extensions go to their Truffle language. */
     private static Object importPath(Object pathArg) {
         NixContext ctx = NixContext.get(null);
-        TruffleFile file = file(pathArg);
+        Object p = force(pathArg);
+        if (p instanceof NixPath np && np.path.startsWith("/__corepkgs__/")) {
+            Object cached = ctx.importCache.get(np.path);
+            if (cached != null) return cached;
+            String text = NixContext.corepkg(np.path.substring("/__corepkgs__/".length()));
+            if (text == null) throw error("file '" + np.path + "' does not exist");
+            Object result = ctx.language.parseSource(Source.newBuilder("nix", text, np.path).build()).call();
+            ctx.importCache.put(np.path, result);
+            return result;
+        }
+        TruffleFile file = file(p);
         if (file.isDirectory()) file = file.resolve("default.nix");
         String key;
         try {

@@ -9,25 +9,39 @@ public final class Arith {
 
     private static boolean isNumber(Object v) { return v instanceof Long || v instanceof Double; }
 
+    /**
+     * {@code a + b}, following CppNix's ExprConcatStrings: the left operand's type decides. Numbers
+     * add; a path absorbs the right side as a path; anything else concatenates as strings, copying
+     * paths to the store only if the left side is a string.
+     */
     @TruffleBoundary
     public static Object add(Object a, Object b, Node location) {
-        if (a instanceof Long x && b instanceof Long y) {
-            try {
-                return Math.addExact(x, y);
-            } catch (ArithmeticException e) {
-                throw NixException.overflow("adding", x, y, location);
+        if (a instanceof Long x) {
+            if (b instanceof Long y) {
+                try {
+                    return Math.addExact(x, y);
+                } catch (ArithmeticException e) {
+                    throw NixException.overflow("adding", x, y, location);
+                }
             }
+            if (b instanceof Double y) return x + y;
+            throw NixException.error("cannot add " + Values.typeName(b) + " to an integer", location);
         }
-        if (isNumber(a) && isNumber(b)) return ((Number) a).doubleValue() + ((Number) b).doubleValue();
-        if (a instanceof String s) {
-            if (b instanceof String t) return s + t;
-            if (b instanceof NixPath p) return s + p.path;
+        if (a instanceof Double x) {
+            if (isNumber(b)) return x + ((Number) b).doubleValue();
+            throw NixException.error("cannot add " + Values.typeName(b) + " to a float", location);
         }
         if (a instanceof NixPath p) {
-            if (b instanceof String t) return new NixPath(NixPath.canonicalize(p.path + t));
-            if (b instanceof NixPath q) return new NixPath(NixPath.canonicalize(p.path + q.path));
+            java.util.Set<String> context = new java.util.TreeSet<>();
+            String rest = Values.coerce(b, false, false, context, location);
+            if (!context.isEmpty()) throw NixException.error("a string that refers to a store path cannot be appended to a path", location);
+            return new NixPath(NixPath.canonicalize(p.path + rest));
         }
-        throw NixException.error("cannot add " + Values.typeName(b) + " to " + Values.typeName(a), location);
+        java.util.Set<String> context = new java.util.TreeSet<>();
+        boolean copy = NixString.is(a);
+        String left = Values.coerce(a, false, copy, context, location);
+        String right = Values.coerce(b, false, copy, context, location);
+        return NixString.make(left + right, context);
     }
 
     @TruffleBoundary
