@@ -30,6 +30,7 @@ import java.util.List;
  *   --time              print the time of every evaluation to stderr
  *   --test              one line per input; errors are printed as "error"
  *   --pbt-server        speak the nix-pbt evaluation protocol on stdin/stdout
+ *   flake lock [DIR]    write DIR's flake.lock, like `nix flake lock`
  * </pre>
  */
 public final class Main {
@@ -134,8 +135,11 @@ public final class Main {
                     return repl(options);
                 }
                 case "--pbt-server" -> pbtServer = true;
+                case "flake" -> {
+                    return FlakeCommand.run(options, java.util.Arrays.copyOfRange(args, i + 1, args.length));
+                }
                 case "-h", "--help" -> {
-                    System.out.println("usage: nix-truffle [options] (FILE... | -E EXPR | --repl | --pbt-server)");
+                    System.out.println("usage: nix-truffle [options] (FILE... | -E EXPR | --repl | --pbt-server | flake lock)");
                     return 0;
                 }
                 default -> {

@@ -106,6 +106,24 @@ final class GitScheme implements InputScheme {
         return repoInfo(input).path;
     }
 
+    @Override
+    public void putFile(Input input, String relPath, byte[] contents) {
+        RepoInfo repo = repoInfo(input);
+        if (repo.path == null) {
+            throw new FetchException("cannot commit '/" + relPath + "' to Git repository '" + input + "' because it's not a working tree");
+        }
+        try {
+            Fs.writeFile(repo.path + "/" + relPath, contents, 0666);
+        } catch (IOException e) {
+            throw new FetchException("cannot write '" + repo.path + "/" + relPath + "': " + e.getMessage());
+        }
+        GitRepo r = GitRepo.open(repo.path);
+        // A file that isn't ignored is added (as intent-to-add, so that it's part of the tree).
+        if (r.git(List.of("check-ignore", "--quiet", Bytes.toJava(relPath)), null, false).status() != 0) {
+            r.git(List.of("add", "--intent-to-add", "--", Bytes.toJava(relPath)), null, true);
+        }
+    }
+
     // ---------------------------------------------------------- repo info
 
     /** A local repository ({@code path}) or a remote URL; the working tree state for local ones. */

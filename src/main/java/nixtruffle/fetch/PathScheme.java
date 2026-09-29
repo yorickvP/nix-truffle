@@ -89,6 +89,16 @@ final class PathScheme implements InputScheme {
         return input.getNarHash() != null;
     }
 
+    @Override
+    public void putFile(Input input, String relPath, byte[] contents) {
+        String path = absPath(input) + "/" + relPath;
+        try {
+            Fs.writeFile(path, contents, 0666);
+        } catch (IOException e) {
+            throw new FetchException("cannot write '" + path + "': " + e.getMessage());
+        }
+    }
+
     static String absPath(Input input) {
         String p = input.attrs.requireStr("path");
         if (p.startsWith("/")) return NixPath.canonicalize(p);

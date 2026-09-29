@@ -559,15 +559,8 @@ public final class Builtins {
 
         FileBuiltins.install();
         StoreBuiltins.install();
-
         FetchBuiltins.install();
-
-        // Not implemented yet; they exist so that code mentioning them still resolves.
-        for (String name : new String[] {"flakeRefToString", "getFlake", "parseFlakeRef"}) {
-            defFeature(name, 1, "flakes", a -> {
-                throw error("builtins." + name + " is not supported by nix-truffle yet");
-            });
-        }
+        FlakeBuiltins.install();
     }
 
     /**

@@ -63,6 +63,10 @@ final class Internals {
             return NixContext.get(null).language.parse(text, Bytes.fromJava("«string»"), null, null, null).call();
         });
         put(m, "importFile", 1, a -> FileBuiltins.importFile(Bytes.of(bytesIn(a[0]))));
+        put(m, "flakeLock", 1, a -> {
+            FlakeBuiltins.lock(Bytes.of(bytesIn(a[0])));
+            return nixtruffle.runtime.NixNull.INSTANCE;
+        });
         put(m, "autoCall", 2, a -> autoCall(attrs(a[0]), a[1]));
         put(m, "findAttrPath", 3, a -> findAttrPath(attrs(a[0]), string(a[1]), a[2]));
         put(m, "instantiate", 3, a -> instantiate(bool(a[0]), attrs(a[1]), a[2]));

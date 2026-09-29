@@ -34,6 +34,11 @@ interface InputScheme {
         return null;
     }
 
+    /** Writes a file ({@code flake.lock}) into the input's source ({@code relPath} is relative to it). */
+    default void putFile(Input input, String relPath, byte[] contents) {
+        throw new FetchException("input '" + input + "' does not support modifying file '/" + relPath + "'");
+    }
+
     /** Whether the scheme needs the {@code flakes} experimental feature. */
     default boolean needsFlakes() {
         return false;

@@ -243,6 +243,31 @@ public final class FileBuiltins {
         return importPath(new NixPath(NixPath.canonicalize(path)), null);
     }
 
+    /**
+     * Evaluates a file that must be an attribute set literal, not a computation ({@code flake.nix};
+     * CppNix's {@code evalFile} with {@code mustBeTrivial}).
+     */
+    static Object importTrivialFile(String path) {
+        NixContext ctx = NixContext.get(null);
+        ensureReadable(path);
+        String file = resolveExprPath(path);
+        Object cached = ctx.importCache.get(file);
+        if (cached != null) return cached;
+        String text;
+        try {
+            text = Bytes.of(Fs.readFile(file));
+        } catch (IOException e) {
+            throw error(e.getMessage());
+        }
+        var source = com.oracle.truffle.api.source.Source.newBuilder(nixtruffle.NixLanguage.ID, text, file).build();
+        if (!(new nixtruffle.parser.Parser(source).parseFile() instanceof nixtruffle.parser.Expr.Attrs)) {
+            throw error("file '" + file + "' must be an attribute set");
+        }
+        Object result = ctx.language.parse(text, file, file, null, null).call();
+        ctx.importCache.put(file, result);
+        return result;
+    }
+
     /** {@code import} and {@code scopedImport}. */
     private static Object importPath(Object pathArg, Object scope) {
         NixContext ctx = NixContext.get(null);
@@ -325,9 +350,8 @@ public final class FileBuiltins {
     }
 
     /**
-     * {@code resolveLookupPathPath}: a URL is downloaded and unpacked, {@code flake:ref} is resolved
-     * by the installed {@code nix}, anything else is a local path that must exist. Null (with a
-     * warning) if it can't be used.
+     * {@code resolveLookupPathPath}: a URL is downloaded and unpacked, {@code flake:ref} is fetched,
+     * anything else is a local path that must exist. Null (with a warning) if it can't be used.
      */
     private static String resolveLookupPathEntry(String value) {
         NixContext ctx = NixContext.get(null);
@@ -341,7 +365,7 @@ public final class FileBuiltins {
                 ctx.printErr("warning: Nix search path entry '" + value + "' cannot be downloaded, ignoring");
             }
         } else if (value.startsWith("flake:")) {
-            result = resolveFlakeRef(java.substring("flake:".length()));
+            result = FlakeBuiltins.resolveLookupPathFlake(value.substring("flake:".length()));
         } else {
             String path = NixPath.canonicalize(value.startsWith("/") ? value : nixtruffle.NixLanguage.cwd() + "/" + value);
             try {
@@ -356,18 +380,5 @@ public final class FileBuiltins {
         }
         ctx.lookupPathCache.put(value, result);
         return result;
-    }
-
-    /** A flake reference's source path, from {@code nix flake metadata}; null if that fails. */
-    private static String resolveFlakeRef(String ref) {
-        try {
-            Process p = new ProcessBuilder("nix", "--extra-experimental-features", "nix-command flakes", "flake", "metadata", "--json", ref)
-                    .redirectError(ProcessBuilder.Redirect.DISCARD).start();
-            String json = new String(p.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
-            java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"path\"\\s*:\\s*\"([^\"]+)\"").matcher(json);
-            return p.waitFor() == 0 && m.find() ? Bytes.fromJava(m.group(1)) : null;
-        } catch (IOException | InterruptedException e) {
-            return null;
-        }
     }
 }
