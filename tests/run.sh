@@ -34,6 +34,17 @@ else
   fail=$((fail+1)); echo "FAIL examples/polyglot.nix"
 fi
 
+# Instantiation: write fresh (salted) derivations with nix-truffle first, then check that
+# nix-instantiate computes the same .drv paths.
+salt="t$RANDOM$RANDOM"
+ours="$("$root/bin/nix-truffle" --instantiate "$root/tests/instantiate.nix" --argstr salt "$salt" 2>/dev/null)"
+theirs="$(nix-instantiate "$root/tests/instantiate.nix" --argstr salt "$salt" 2>/dev/null)"
+if [[ -n "$ours" && "$ours" == "$theirs" ]]; then
+  pass=$((pass+1))
+else
+  fail=$((fail+1)); echo "FAIL tests/instantiate.nix"; echo "  nix:     $theirs"; echo "  truffle: $ours"
+fi
+
 # nixpkgs' lib (incl. evalModules), if <nixpkgs> is on NIX_PATH.
 if expected_lib="$(nix-instantiate --eval --strict "$root/examples/nixpkgs-lib.nix" 2>/dev/null)"; then
   if [[ "$("$root/bin/nix-truffle" "$root/examples/nixpkgs-lib.nix" 2>&1)" == "$expected_lib" ]]; then

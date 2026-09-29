@@ -111,6 +111,33 @@ public final class Store {
         return e == null ? new TreeSet<>() : e.references();
     }
 
+    /**
+     * Adds {@code root} and everything it references to the real store through the daemon,
+     * dependencies first. The daemon computes each path itself; a mismatch with ours is an error.
+     * Returns the number of paths that were not valid yet.
+     */
+    public int writeClosure(DaemonClient client, String root, java.util.Set<String> done) throws IOException {
+        if (!done.add(root)) return 0;
+        Entry e = entries.get(root);
+        if (e == null) return 0; // not created by us (e.g. builtins.storePath): must exist already
+        int added = 0;
+        for (String ref : e.references()) {
+            if (!ref.equals(root)) added += writeClosure(client, ref, done);
+        }
+        if (client.isValidPath(root)) return added;
+        String got = switch (e) {
+            case Text t -> client.addToStore(t.name(), "text:sha256", t.references(),
+                    out -> out.write(t.contents().getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+            case Drv d -> client.addToStore(d.drv().name + ".drv", "text:sha256", d.references(),
+                    out -> out.write(d.contents().getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+            case Source src -> src.recursive()
+                    ? client.addToStore(src.name(), "fixed:r:sha256", new TreeSet<>(), out -> Nar.dump(src.file(), src.filter(), out))
+                    : client.addToStore(src.name(), "fixed:sha256", new TreeSet<>(), out -> out.write(src.file().readAllBytes()));
+        };
+        if (!got.equals(root)) throw new IOException("store path mismatch: computed " + root + " but the daemon added " + got);
+        return added + 1;
+    }
+
     /** {@code computeFSClosure} over the paths we know about. */
     public TreeSet<String> closure(String path) {
         TreeSet<String> seen = new TreeSet<>();

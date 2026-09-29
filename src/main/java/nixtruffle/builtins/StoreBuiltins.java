@@ -92,6 +92,11 @@ final class StoreBuiltins {
             }
         });
 
+        // ---------------------------------- CLI support (nix-instantiate semantics)
+        Builtins.def("__autoCall", 2, a -> autoCall(attrs(a[0]), a[1]));
+        Builtins.def("__findAttrPath", 3, a -> findAttrPath(attrs(a[0]), string(a[1]), a[2]));
+        Builtins.def("__instantiate", 3, a -> instantiate(bool(a[0]), attrs(a[1]), a[2]));
+
         // --------------------------------------------------------- context
         Builtins.def("unsafeDiscardStringContext", 1, a -> string(a[0]));
         Builtins.def("hasContext", 1, a -> force(a[0]) instanceof NixString);
@@ -343,7 +348,92 @@ final class StoreBuiltins {
         return outputs;
     }
 
-    static Object forceValue(Object v) {
-        return Thunk.force(v);
+    // ------------------------------------------------------------ CLI
+
+    /** nix-instantiate's autoCallFunction: call functions with formals using the --arg values. */
+    private static Object autoCall(NixAttrs autoArgs, Object value) {
+        Object v = force(value);
+        if (v instanceof NixAttrs a && a.getRaw("__functor") != null) {
+            return autoCall(autoArgs, Apply.apply(a.get("__functor"), a, null));
+        }
+        if (!(v instanceof nixtruffle.runtime.NixLambda l) || !l.info.hasFormals()) return v;
+        TreeMap<String, Object> args = new TreeMap<>();
+        if (l.info.ellipsis()) {
+            args.putAll(autoArgs.toMap());
+        } else {
+            for (int i = 0; i < l.info.formals().length; i++) {
+                String name = l.info.formals()[i];
+                Object given = autoArgs.getRaw(name);
+                if (given != null) {
+                    args.put(name, given);
+                } else if (!l.info.hasDefault()[i]) {
+                    throw error("cannot evaluate a function that has an argument without a value ('" + name + "')");
+                }
+            }
+        }
+        return Apply.apply(l, NixAttrs.fromMap(args), null);
+    }
+
+    /** {@code -A a.b.0}: auto-calls functions along the way, numbers index lists. */
+    private static Object findAttrPath(NixAttrs autoArgs, String path, Object root) {
+        Object v = force(root);
+        if (path.isEmpty()) return v;
+        for (String attr : path.split("\\.")) {
+            v = autoCall(autoArgs, v);
+            if (v instanceof NixList l && attr.matches("[0-9]+")) {
+                int i = Integer.parseInt(attr);
+                if (i >= l.size()) throw error("list index " + i + " in selection path '" + path + "' is out of range");
+                v = l.forceAt(i);
+            } else if (v instanceof NixAttrs a) {
+                v = a.get(attr);
+                if (v == null) throw error("attribute '" + attr + "' in selection path '" + path + "' not found");
+            } else {
+                throw error("the expression selected by the selection path '" + path + "' should be a set but is " + Values.typeName(v));
+            }
+        }
+        return v;
+    }
+
+    /** nix-instantiate: collect derivations (like getDerivations), force their .drv, optionally write them. */
+    private static Object instantiate(boolean write, NixAttrs autoArgs, Object value) {
+        List<NixAttrs> drvs = new ArrayList<>();
+        collectDerivations(autoArgs, value, drvs, true);
+        List<Object> out = new ArrayList<>();
+        List<String> drvPaths = new ArrayList<>();
+        for (NixAttrs d : drvs) {
+            String drvPath = string(d.get("drvPath"));
+            Object outputName = d.get("outputName");
+            String output = outputName == null ? "out" : string(outputName);
+            drvPaths.add(drvPath);
+            out.add(output.equals("out") ? drvPath : drvPath + "!" + output);
+        }
+        if (write) {
+            try (nixtruffle.store.DaemonClient client = new nixtruffle.store.DaemonClient()) {
+                Set<String> done = new java.util.HashSet<>();
+                int added = 0;
+                for (String p : drvPaths) added += store().writeClosure(client, p, done);
+                NixContext.get(null).err.println("added " + added + " new paths to the store (" + done.size() + " checked)");
+            } catch (IOException e) {
+                throw error("cannot write to the store: " + e.getMessage());
+            }
+        }
+        return new NixList(out.toArray());
+    }
+
+    private static void collectDerivations(NixAttrs autoArgs, Object value, List<NixAttrs> drvs, boolean top) {
+        Object v = top ? autoCall(autoArgs, value) : force(value);
+        if (v instanceof NixAttrs a && nixtruffle.runtime.Derivations.isDerivation(a)) {
+            drvs.add(a);
+        } else if (v instanceof NixAttrs a) {
+            if (!top) {
+                Object recurse = a.get("recurseForDerivations");
+                if (recurse == null || !bool(recurse)) return;
+            }
+            for (int i = 0; i < a.size(); i++) collectDerivations(autoArgs, a.forceAt(i), drvs, false);
+        } else if (v instanceof NixList l) {
+            for (int i = 0; i < l.size(); i++) collectDerivations(autoArgs, l.forceAt(i), drvs, false);
+        } else if (top) {
+            throw error("expression does not evaluate to a derivation (or a set or list of those)");
+        }
     }
 }
