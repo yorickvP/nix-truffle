@@ -204,8 +204,11 @@ the lock file, like Nix. `nixConfig` is checked but not applied.
   leftmost-longest) matches, the same corner cases, the same errors.
 - **Not supported:** content-addressed or impure derivations, import-from-derivation (an
   error, since evaluation doesn't build), fetching Git LFS files, `verified-fetches`.
-  `builtins.unsafeGetAttrPos` returns null, which only changes error messages and option
-  declaration positions.
+- **Attribute positions** (`builtins.unsafeGetAttrPos`) follow CppNix, including which builtins
+  keep them (`//`, `removeAttrs`, `intersectAttrs`, `listToAttrs`) and which don't (`mapAttrs`).
+  They matter for more than error messages: `nixos/lib/eval-config.nix` wraps modules
+  depending on them, which changes the order in which list options such as
+  `environment.systemPackages` are merged.
 - **Approximations:** error messages have a location and a derivation trace but no full
   Nix-style trace. Evaluation is single-threaded.
 

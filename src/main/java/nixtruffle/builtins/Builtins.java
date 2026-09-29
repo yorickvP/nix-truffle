@@ -345,8 +345,17 @@ public final class Builtins {
             // come from those.
             Map<String, Integer> first = new HashMap<>();
             for (int i = 0; i < items.length; i++) first.putIfAbsent(names[i], i);
-            for (Map.Entry<String, Object> e : map.entrySet()) e.setValue(required(entries[first.get(e.getKey())], "value"));
-            return NixAttrs.fromMap(map);
+            // Each attribute is where its `value` was defined.
+            Object[] positions = new Object[map.size()];
+            boolean anyPosition = false;
+            int n = 0;
+            for (Map.Entry<String, Object> e : map.entrySet()) {
+                NixAttrs entry = entries[first.get(e.getKey())];
+                e.setValue(required(entry, "value"));
+                positions[n] = entry.pos(entry.indexOf("value"));
+                anyPosition |= positions[n++] != null;
+            }
+            return new NixAttrs(map.keySet().toArray(new String[0]), map.values().toArray(), anyPosition ? positions : null);
         });
         def("mapAttrs", 2, a -> {
             NixAttrs s = attrs(a[1]);
@@ -402,8 +411,12 @@ public final class Builtins {
             if (!(f instanceof NixLambda l)) throw error("'functionArgs' requires a function");
             if (!l.info.hasFormals()) return NixAttrs.EMPTY;
             TreeMap<String, Object> map = new TreeMap<>();
-            for (int i = 0; i < l.info.formals().length; i++) map.put(l.info.formals()[i], l.info.hasDefault()[i]);
-            return NixAttrs.fromMap(map);
+            TreeMap<String, Object> positions = new TreeMap<>();
+            for (int i = 0; i < l.info.formals().length; i++) {
+                map.put(l.info.formals()[i], l.info.hasDefault()[i]);
+                positions.put(l.info.formals()[i], l.info.formalPositions()[i]);
+            }
+            return new NixAttrs(map.keySet().toArray(new String[0]), map.values().toArray(), positions.values().toArray());
         });
         def("genericClosure", 1, a -> {
             NixAttrs args = attrs(a[0]);

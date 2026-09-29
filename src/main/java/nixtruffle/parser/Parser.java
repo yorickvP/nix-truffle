@@ -304,7 +304,7 @@ public final class Parser {
                 for (Formal f : formals) {
                     if (f.name().equals(id.text)) throw error("duplicate formal function argument '" + id.text + "'", id.start);
                 }
-                formals.add(new Formal(id.text, fallback));
+                formals.add(new Formal(id.text, fallback, id.start));
             }
             if (cur.type != T.COMMA) break;
             advance();
@@ -492,13 +492,15 @@ public final class Parser {
                     expect(T.RPAREN);
                 }
                 List<String> names = new ArrayList<>();
+                List<Integer> namePos = new ArrayList<>();
                 while (cur.type != T.SEMI) {
+                    namePos.add(cur.start);
                     AttrKey key = parseAttr();
                     if (key.name() == null) throw error("dynamic attributes not allowed in inherit", pos);
                     names.add(key.name());
                 }
                 advance();
-                binds.add(new Inherit(from, names, pos));
+                binds.add(new Inherit(from, names, namePos, pos));
             } else {
                 List<AttrKey> path = parseAttrPath();
                 expect(T.ASSIGN);

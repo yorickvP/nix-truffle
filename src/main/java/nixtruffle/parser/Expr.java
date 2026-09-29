@@ -40,12 +40,13 @@ public sealed interface Expr {
         public static AttrKey of(String name) { return new AttrKey(name, null); }
     }
 
-    record Formal(String name, Expr fallback) {}
+    record Formal(String name, Expr fallback, int pos) {}
     record Formals(List<Formal> formals, boolean ellipsis) {}
 
     sealed interface Binding {
         int pos();
         record Assign(List<AttrKey> path, Expr value, int pos) implements Binding {}
-        record Inherit(Expr from, List<String> names, int pos) implements Binding {}
+        /** {@code namePos} are the names' positions (their attributes' positions). */
+        record Inherit(Expr from, List<String> names, List<Integer> namePos, int pos) implements Binding {}
     }
 }

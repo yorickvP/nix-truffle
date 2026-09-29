@@ -123,13 +123,14 @@ public final class Translator {
 
     /** {@code { file; line; column; }} for a source offset, or null for sources that aren't files. */
     public Object position(int pos) {
-        if (path == null || source.getLength() == 0) return nixtruffle.runtime.NixNull.INSTANCE;
-        int p = Math.max(0, Math.min(pos, source.getLength() - 1));
-        java.util.TreeMap<String, Object> m = new java.util.TreeMap<>();
-        m.put("file", path);
-        m.put("line", (long) source.getLineNumber(p));
-        m.put("column", (long) source.getColumnNumber(p));
-        return nixtruffle.runtime.NixAttrs.fromMap(m);
+        nixtruffle.runtime.Pos p = pos(pos);
+        return p == null ? nixtruffle.runtime.NixNull.INSTANCE : p.toValue();
+    }
+
+    /** A position in this file; null if the source isn't a file (e.g. an {@code -E} expression). */
+    private nixtruffle.runtime.Pos pos(int offset) {
+        if (path == null || source.getLength() == 0) return null;
+        return new nixtruffle.runtime.Pos(source, path, offset);
     }
 
     private Resolved resolve(String name, Scope scope, int pos) {
@@ -318,7 +319,7 @@ public final class Translator {
             int slot = fn.alloc();
             vars.put(l.arg(), slot);
             prologue = new FunctionNodes.BindArg(slot);
-            info = new NixLambda.Info(name, l.arg(), null, null, false, false);
+            info = new NixLambda.Info(name, l.arg(), null, null, null, false, false);
         } else {
             int argSlot = -1;
             if (l.arg() != null) {
@@ -345,7 +346,9 @@ public final class Translator {
             }
             prologue = new FunctionNodes.BindFormals(name, names, slots, defaultIndex, defaults.toArray(NixNode[]::new),
                     l.formals().ellipsis(), argSlot);
-            info = new NixLambda.Info(name, l.arg(), names, hasDefault, true, l.formals().ellipsis());
+            Object[] formalPositions = new Object[names.length];
+            for (int i = 0; i < names.length; i++) formalPositions[i] = pos(formals.get(i).pos());
+            info = new NixLambda.Info(name, l.arg(), names, hasDefault, formalPositions, true, l.formals().ellipsis());
         }
         NixNode body = strict(l.body(), ls);
         NixNode full = new FunctionNodes.Body(prologue, body);
@@ -402,7 +405,7 @@ public final class Translator {
                 dynKeys[i] = strict(nb.dynamic.get(i)[0], rs);
                 dynValues[i] = lazy(nb.dynamic.get(i)[1], rs);
             }
-            return new ControlNodes.Let(writes.toArray(WriteSlot[]::new), new AttrsNode(keys, values, dynKeys, dynValues));
+            return new ControlNodes.Let(writes.toArray(WriteSlot[]::new), new AttrsNode(keys, values, dynKeys, dynValues, positions(nb, keys)));
         }
         Scope vs = s;
         List<WriteSlot> writes = new ArrayList<>();
@@ -420,8 +423,17 @@ public final class Translator {
             dynKeys[i] = strict(nb.dynamic.get(i)[0], s);
             dynValues[i] = lazy(nb.dynamic.get(i)[1], s);
         }
-        AttrsNode node = new AttrsNode(keys, values, dynKeys, dynValues);
+        AttrsNode node = new AttrsNode(keys, values, dynKeys, dynValues, positions(nb, keys));
         return writes.isEmpty() ? node : new ControlNodes.Let(writes.toArray(WriteSlot[]::new), node);
+    }
+
+    /** The positions of an attribute set literal's static attributes, then its dynamic ones. */
+    private Object[][] positions(Normalized nb, String[] keys) {
+        Object[] statics = new Object[keys.length];
+        for (int i = 0; i < keys.length; i++) statics[i] = pos(nb.statics.get(keys[i]).pos);
+        Object[] dynamic = new Object[nb.dynamicPos.size()];
+        for (int i = 0; i < dynamic.length; i++) dynamic[i] = pos(nb.dynamicPos.get(i));
+        return new Object[][] {keys.length == 0 || statics[0] == null ? null : statics, dynamic};
     }
 
     // ------------------------------------------------ binding normalization
@@ -444,6 +456,7 @@ public final class Translator {
     private static final class Normalized {
         final LinkedHashMap<String, Entry> statics = new LinkedHashMap<>();
         final List<Expr[]> dynamic = new ArrayList<>();
+        final List<Integer> dynamicPos = new ArrayList<>();
         final List<Hidden> hidden = new ArrayList<>();
     }
 
@@ -458,9 +471,10 @@ public final class Translator {
                         hidden = "\0inherit" + hiddenCounter++;
                         out.hidden.add(new Hidden(hidden, inh.from()));
                     }
-                    for (String name : inh.names()) {
+                    for (int n = 0; n < inh.names().size(); n++) {
+                        String name = inh.names().get(n);
                         if (out.statics.containsKey(name)) throw error("attribute '" + name + "' already defined", inh.pos());
-                        Entry entry = new Entry(inh.pos());
+                        Entry entry = new Entry(inh.namePos().get(n));
                         if (hidden == null) {
                             entry.inheritVar = true;
                         } else {
@@ -475,6 +489,7 @@ public final class Translator {
                     if (first.name() == null) {
                         Expr value = rest.isEmpty() ? a.value() : new Attrs(false, List.of(new Assign(rest, a.value(), a.pos())), a.pos());
                         out.dynamic.add(new Expr[] {first.expr(), value});
+                        out.dynamicPos.add(a.pos());
                         continue;
                     }
                     Entry existing = out.statics.get(first.name());

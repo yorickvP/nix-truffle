@@ -25,10 +25,20 @@ public final class NixAttrs extends NixObject {
 
     public final String[] keys;
     public final Object[] values;
+    /**
+     * Where each attribute was defined ({@link Pos}, or null), for {@code unsafeGetAttrPos}; null
+     * if none of them has a position. Literals share theirs like their keys.
+     */
+    public final Object[] positions;
 
     public NixAttrs(String[] keys, Object[] values) {
+        this(keys, values, null);
+    }
+
+    public NixAttrs(String[] keys, Object[] values, Object[] positions) {
         this.keys = keys;
         this.values = values;
+        this.positions = positions;
     }
 
     public int size() { return keys.length; }
@@ -78,7 +88,7 @@ public final class NixAttrs extends NixObject {
         return map;
     }
 
-    /** The same keys (and so the same shape) with other values. */
+    /** The same keys (and so the same shape) with other values, and no positions ({@code mapAttrs}). */
     public NixAttrs withValues(Object[] newValues) {
         return new NixAttrs(keys, newValues);
     }
@@ -88,33 +98,43 @@ public final class NixAttrs extends NixObject {
     public NixAttrs without(java.util.Set<String> names) {
         String[] k = new String[keys.length];
         Object[] v = new Object[keys.length];
+        Object[] p = positions == null ? null : new Object[keys.length];
         int o = 0;
         for (int i = 0; i < keys.length; i++) {
             if (names.contains(keys[i])) continue;
             k[o] = keys[i];
+            if (p != null) p[o] = positions[i];
             v[o++] = values[i];
         }
-        return o == keys.length ? this : new NixAttrs(Arrays.copyOf(k, o), Arrays.copyOf(v, o));
+        return o == keys.length ? this : new NixAttrs(Arrays.copyOf(k, o), Arrays.copyOf(v, o), p == null ? null : Arrays.copyOf(p, o));
     }
 
-    /** The attributes at these indices (in increasing order). */
+    /** The attributes at these indices (in increasing order), with their positions. */
     @TruffleBoundary
     public NixAttrs select(java.util.List<Integer> indices) {
         String[] k = new String[indices.size()];
         Object[] v = new Object[indices.size()];
+        Object[] p = positions == null ? null : new Object[indices.size()];
         for (int i = 0; i < k.length; i++) {
             k[i] = keys[indices.get(i)];
             v[i] = values[indices.get(i)];
+            if (p != null) p[i] = positions[indices.get(i)];
         }
-        return new NixAttrs(k, v);
+        return new NixAttrs(k, v, p);
+    }
+
+    /** Where attribute {@code i} was defined: a {@link Pos}, or null. */
+    public Pos pos(int i) {
+        return positions == null ? null : (Pos) positions[i];
     }
 
     /**
-     * {@code unsafeGetAttrPos}: the position of attribute {@code i}. Positions aren't tracked, and
-     * Nix gives null for attributes defined outside files (e.g. {@code -E} expressions) anyway.
+     * {@code unsafeGetAttrPos}: {@code { file, line, column }} of attribute {@code i}, or null for
+     * attributes that weren't defined in a file (builtins' results, {@code -E} expressions).
      */
     public Object position(int i) {
-        return NixNull.INSTANCE;
+        Pos p = pos(i);
+        return p == null ? NixNull.INSTANCE : p.toValue();
     }
 
     /** {@code this // other}: a merge of two sorted key arrays, right side wins. */
@@ -124,19 +144,23 @@ public final class NixAttrs extends NixObject {
         if (keys.length == 0) return other;
         String[] k = new String[keys.length + other.keys.length];
         Object[] v = new Object[k.length];
+        Object[] p = positions == null && other.positions == null ? null : new Object[k.length];
         int i = 0, j = 0, o = 0;
         while (i < keys.length || j < other.keys.length) {
             int c = i == keys.length ? 1 : j == other.keys.length ? -1 : keys[i].compareTo(other.keys[j]);
             if (c < 0) {
                 k[o] = keys[i];
+                if (p != null) p[o] = pos(i);
                 v[o++] = values[i++];
             } else {
                 if (c == 0) i++;
                 k[o] = other.keys[j];
+                if (p != null) p[o] = other.pos(j);
                 v[o++] = other.values[j++];
             }
         }
-        return new NixAttrs(Arrays.copyOf(k, o), Arrays.copyOf(v, o));
+        if (o == k.length) return new NixAttrs(k, v, p);
+        return new NixAttrs(Arrays.copyOf(k, o), Arrays.copyOf(v, o), p == null ? null : Arrays.copyOf(p, o));
     }
 
     @ExportMessage
