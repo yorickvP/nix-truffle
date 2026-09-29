@@ -1,0 +1,1 @@
+{ callback = 42; described = "hello-2.12 (2 deps)"; fib = 6765; greeting = "hello from JS, nix!"; jsObject = { answer = 42; nested = { list = [ 1 "two" ]; }; }; mathMax = 9; squares = [ 1 4 9 16 ]; sum = 42; }

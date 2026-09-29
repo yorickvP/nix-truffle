@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Run the Truffle Nix interpreter. Build first with: mvn -q package
+set -euo pipefail
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ ! -f "$root/target/classpath.txt" ]]; then
+  echo "nix-truffle: not built yet, run 'mvn -q package' in $root" >&2
+  exit 1
+fi
+java=java
+[[ -n "${JAVA_HOME:-}" ]] && java="$JAVA_HOME/bin/java"
+exec "$java" \
+  --enable-native-access=ALL-UNNAMED \
+  --sun-misc-unsafe-memory-access=allow \
+  -Dpolyglot.engine.WarnInterpreterOnly=true \
+  ${NIX_TRUFFLE_JAVA_OPTS:-} \
+  -cp "$root/target/classes:$(cat "$root/target/classpath.txt")" \
+  nixtruffle.launcher.Main "$@"
