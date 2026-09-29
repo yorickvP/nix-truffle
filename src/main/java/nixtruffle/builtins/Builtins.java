@@ -560,12 +560,9 @@ public final class Builtins {
         FileBuiltins.install();
         StoreBuiltins.install();
 
+        FetchBuiltins.install();
+
         // Not implemented yet; they exist so that code mentioning them still resolves.
-        for (String name : new String[] {"fetchGit", "fetchMercurial", "fetchTarball", "fetchTree", "fetchurl"}) {
-            def(name, 1, a -> {
-                throw error("builtins." + name + " is not supported by nix-truffle yet");
-            });
-        }
         for (String name : new String[] {"flakeRefToString", "getFlake", "parseFlakeRef"}) {
             defFeature(name, 1, "flakes", a -> {
                 throw error("builtins." + name + " is not supported by nix-truffle yet");

@@ -29,6 +29,7 @@ public final class DaemonClient implements AutoCloseable {
 
     private static final long OP_IS_VALID_PATH = 1;
     private static final long OP_ADD_TO_STORE = 7;
+    private static final long OP_ADD_TEMP_ROOT = 11;
     private static final long OP_QUERY_PATH_INFO = 26;
 
     private final SocketChannel channel;
@@ -85,6 +86,15 @@ public final class DaemonClient implements AutoCloseable {
         for (long i = 0; i < sigs; i++) readString();
         String ca = readString();
         return new PathInfo(narHash, refs, narSize, ca);
+    }
+
+    /** {@code wopAddTempRoot}: protects a path from garbage collection while we're connected. */
+    public void addTempRoot(String path) throws IOException {
+        writeU64(OP_ADD_TEMP_ROOT);
+        writeString(path);
+        flush();
+        processStderr();
+        readU64();
     }
 
     /** Streams data to the daemon in frames. */

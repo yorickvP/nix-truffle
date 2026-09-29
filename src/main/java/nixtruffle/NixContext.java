@@ -35,6 +35,14 @@ public final class NixContext {
         this.store.readOnly = readOnly;
     }
 
+    private nixtruffle.fetch.Fetcher fetcher;
+
+    /** The fetchers' state for this evaluation (created on first use). */
+    public nixtruffle.fetch.Fetcher fetcher() {
+        if (fetcher == null) fetcher = new nixtruffle.fetch.Fetcher(store, settings);
+        return fetcher;
+    }
+
     /** A name in the base environment (after lexical scopes, before {@code with}), or null. */
     public Object global(String name) {
         if (globals == null) globals = nixtruffle.builtins.Builtins.createBaseEnv(this);

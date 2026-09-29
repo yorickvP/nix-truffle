@@ -184,6 +184,12 @@ public record Hash(String algo, byte[] bytes) {
         return parseAny(s, algo);
     }
 
+    /** An SRI or {@code algo:} prefixed hash (the algorithm must be given by the string). */
+    public static Hash parseAnyPrefixed(String s) {
+        if (s.indexOf(':') < 0 && s.indexOf('-') < 0) throw new IllegalArgumentException("hash '" + s + "' does not include a type");
+        return parseAny(s, null);
+    }
+
     private static byte[] decodeBase16(String s) {
         byte[] out = new byte[s.length() / 2];
         for (int i = 0; i < out.length; i++) {

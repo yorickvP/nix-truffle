@@ -325,9 +325,9 @@ public final class FileBuiltins {
     }
 
     /**
-     * {@code resolveLookupPathPath}: {@code flake:ref} is resolved by the installed {@code nix},
-     * anything else is a local path that must exist. Null (with a warning) if it can't be used.
-     * URLs would have to be downloaded, which nix-truffle can't do yet.
+     * {@code resolveLookupPathPath}: a URL is downloaded and unpacked, {@code flake:ref} is resolved
+     * by the installed {@code nix}, anything else is a local path that must exist. Null (with a
+     * warning) if it can't be used.
      */
     private static String resolveLookupPathEntry(String value) {
         NixContext ctx = NixContext.get(null);
@@ -335,7 +335,11 @@ public final class FileBuiltins {
         String result = null;
         String java = Bytes.toJava(value);
         if (Settings.isPseudoUrl(java)) {
-            ctx.printErr("warning: Nix search path entry '" + value + "' cannot be downloaded, ignoring");
+            try {
+                result = FetchBuiltins.downloadTarballToStore(Bytes.fromJava(Settings.resolvePseudoUrl(java)));
+            } catch (NixException e) {
+                ctx.printErr("warning: Nix search path entry '" + value + "' cannot be downloaded, ignoring");
+            }
         } else if (value.startsWith("flake:")) {
             result = resolveFlakeRef(java.substring("flake:".length()));
         } else {
