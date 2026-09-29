@@ -29,6 +29,7 @@ import java.util.List;
  *   --repeat N          evaluate N times (to watch the JIT warm up), print the last result
  *   --time              print the time of every evaluation to stderr
  *   --test              one line per input; errors are printed as "error"
+ *   --pbt-server        speak the nix-pbt evaluation protocol on stdin/stdout
  * </pre>
  */
 public final class Main {
@@ -111,6 +112,7 @@ public final class Main {
         boolean time = false;
         boolean test = false;
         boolean instantiate = false;
+        boolean pbtServer = false;
         for (int i = 0; i < args.length; ) {
             int used = options.parse(args, i);
             if (used > 0) {
@@ -131,8 +133,9 @@ public final class Main {
                 case "--repl" -> {
                     return repl(options);
                 }
+                case "--pbt-server" -> pbtServer = true;
                 case "-h", "--help" -> {
-                    System.out.println("usage: nix-truffle [options] (FILE... | -E EXPR | --repl)");
+                    System.out.println("usage: nix-truffle [options] (FILE... | -E EXPR | --repl | --pbt-server)");
                     return 0;
                 }
                 default -> {
@@ -144,6 +147,7 @@ public final class Main {
             }
             i++;
         }
+        if (pbtServer) return PbtServer.run(options.builder(false));
         if (inputs.isEmpty()) return repl(options);
 
         if (attrPaths.isEmpty()) attrPaths.add("");
