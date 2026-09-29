@@ -242,15 +242,17 @@ public final class Translator {
         String nixPath = System.getenv("NIX_PATH");
         String name = sp.name();
         if (nixPath != null) {
-            for (String entry : nixPath.split(":")) {
+            for (String entry : splitNixPath(nixPath)) {
                 if (entry.isEmpty()) continue;
                 String candidate = null;
                 int eq = entry.indexOf('=');
                 if (eq >= 0) {
                     String prefix = entry.substring(0, eq);
-                    if (name.equals(prefix) || name.startsWith(prefix + "/")) candidate = entry.substring(eq + 1) + name.substring(prefix.length());
+                    if (name.equals(prefix) || name.startsWith(prefix + "/")) {
+                        candidate = resolveFlakeRef(entry.substring(eq + 1)) + name.substring(prefix.length());
+                    }
                 } else {
-                    candidate = entry + "/" + name;
+                    candidate = resolveFlakeRef(entry) + "/" + name;
                 }
                 if (candidate != null) {
                     TruffleFile file = NixContext.get(null).env.getPublicTruffleFile(candidate);
@@ -259,6 +261,52 @@ public final class Translator {
             }
         }
         throw error("file '" + name + "' was not found in the Nix search path", sp.pos());
+    }
+
+    /** Splits NIX_PATH on ':' except inside {@code flake:...} and URL entries (like Nix's parseNixPath). */
+    private static List<String> splitNixPath(String s) {
+        List<String> out = new ArrayList<>();
+        int start = 0;
+        int p = 0;
+        while (p < s.length()) {
+            int valueStart = start;
+            while (p < s.length() && s.charAt(p) != ':') {
+                if (s.charAt(p) == '=') valueStart = p + 1;
+                p++;
+            }
+            if (p < s.length()) {
+                String rest = s.substring(valueStart);
+                if (rest.startsWith("flake:") || rest.matches("^(https?|ftp|file|channel|git\\+[a-z]+):.*")) {
+                    p++;
+                    while (p < s.length() && s.charAt(p) != ':') p++;
+                }
+            }
+            if (p > start) out.add(s.substring(start, p));
+            start = ++p;
+        }
+        return out;
+    }
+
+    private static final Map<String, String> FLAKE_REFS = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * {@code NIX_PATH} entries may be flake references ({@code nixpkgs=flake:nixpkgs}); we let the
+     * installed nix fetch and resolve those rather than implementing the flake registry.
+     */
+    private static String resolveFlakeRef(String entry) {
+        if (!entry.startsWith("flake:")) return entry;
+        return FLAKE_REFS.computeIfAbsent(entry, e -> {
+            try {
+                Process p = new ProcessBuilder("nix", "--extra-experimental-features", "nix-command flakes",
+                        "flake", "metadata", "--json", e.substring("flake:".length()))
+                        .redirectError(ProcessBuilder.Redirect.DISCARD).start();
+                String json = new String(p.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+                java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"path\"\\s*:\\s*\"([^\"]+)\"").matcher(json);
+                return p.waitFor() == 0 && m.find() ? m.group(1) : e;
+            } catch (java.io.IOException | InterruptedException ex) {
+                return e;
+            }
+        });
     }
 
     // -------------------------------------------------------- lazy positions
