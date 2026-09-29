@@ -263,8 +263,16 @@ public final class Builtins {
         def("intersectAttrs", 2, a -> {
             NixAttrs e1 = attrs(a[0]);
             NixAttrs e2 = attrs(a[1]);
+            // Iterate over the smaller set: callPackage intersects a few formals with all of nixpkgs.
             TreeMap<String, Object> map = new TreeMap<>();
-            for (int i = 0; i < e2.size(); i++) if (e1.indexOf(e2.keys[i]) >= 0) map.put(e2.keys[i], e2.values[i]);
+            if (e1.size() < e2.size()) {
+                for (int i = 0; i < e1.size(); i++) {
+                    int j = e2.indexOf(e1.keys[i]);
+                    if (j >= 0) map.put(e2.keys[j], e2.values[j]);
+                }
+            } else {
+                for (int i = 0; i < e2.size(); i++) if (e1.indexOf(e2.keys[i]) >= 0) map.put(e2.keys[i], e2.values[i]);
+            }
             return NixAttrs.fromMap(map);
         });
         def("catAttrs", 2, a -> {
