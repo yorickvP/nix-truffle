@@ -417,7 +417,7 @@ public final class Parser {
         switch (t.type) {
             case ID, OR_KW -> {
                 advance();
-                return new Var(t.text, t.start);
+                return t.text.equals("__curPos") ? new CurPos(t.start) : new Var(t.text, t.start);
             }
             case INT -> {
                 advance();

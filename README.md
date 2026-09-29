@@ -19,6 +19,11 @@ serialization, `hashDerivationModulo`, string context, NAR hashing of local
 sources, structured attrs JSON, `fromTOML`, and so on. It takes 2.7 s against
 Lix's 2.3 s, JVM startup and JIT warm-up included.
 
+NixOS evaluates too. `-A nixosTests.cosmic` (a full NixOS system, its VM and
+the test driver: 7,083 paths, 6,341 derivations) matches Lix, in 5.2 s against
+5.1 s. So do the test's `driver`, `driverInteractive`, and the machine's
+`system.build.toplevel` and `system.build.vm`.
+
 ```
 $ bin/nix-truffle -E 'let fib = n: if n < 2 then n else fib (n - 1) + fib (n - 2); in fib 32'
 2178309
@@ -141,14 +146,15 @@ java -cp "target/classes:$(cat target/classpath.txt)" examples/Embed.java
   paths including interpolated ones, `<nixpkgs>` via `NIX_PATH` incl. `flake:` entries, `rec`,
   `let`, `inherit (e)`, nested attribute paths, dynamic attributes, formals with defaults, `...`
   and `@`, `with`, `assert`, all operators, `__functor`, `or`, `?`), and all builtins nixpkgs
-  needs to instantiate chromium: derivations, string context, `path`/`filterSource`, `toFile`,
-  `placeholder`, `fromTOML`, `fromJSON`/`toJSON`, regexes, `genericClosure`,
-  `compareVersions`, `hashString`/`hashFile`, and so on.
+  needs to instantiate chromium and a NixOS test: derivations, string context,
+  `path`/`filterSource`, `toFile`, `placeholder`, `fromTOML`, `fromJSON`/`toJSON`, `toXML`,
+  `__curPos`, regexes, `genericClosure`, `compareVersions`, `hashString`/`hashFile`, and so on.
 - **Not supported:** fetchers (`fetchurl`, `fetchTarball`, `fetchGit`, `fetchTree`),
-  `scopedImport`, `toXML`, content-addressed or impure derivations, import-from-derivation,
+  `scopedImport`, content-addressed or impure derivations, import-from-derivation,
   URL literals, `let { }`. Unsupported builtins exist, so code that mentions them still resolves
   (Nix resolves variables statically), but they throw when called.
-  `builtins.unsafeGetAttrPos` returns null.
+  `builtins.unsafeGetAttrPos` returns null, which only changes error messages and option
+  declaration positions.
 - **Approximations:** regexes use `java.util.regex` (POSIX classes translated), strings are
   Java strings (`substring` indexes UTF-16 units, not bytes), and error messages have a location
   and a derivation trace but no full Nix-style trace. Evaluation is single-threaded.
@@ -163,9 +169,9 @@ and nix-truffle and diffs the output (errors are compared as "error"). The cases
 - instantiates `tests/instantiate.nix` with fresh, salted paths (nix-truffle writes them first,
   then `nix-instantiate` has to agree);
 - when `<nixpkgs>` is available, diffs `examples/nixpkgs-lib.nix` (including `evalModules`) and
-  the `.drv` paths of `hello` and, with `SLOW=1`, `chromium`.
+  the `.drv` paths of `hello` and, with `SLOW=1`, `chromium` and `nixosTests.cosmic`.
 
-Currently all 33 checks pass against Lix 2.94.
+Currently all 36 checks pass against Lix 2.94 (with `SLOW=1`).
 
 `bench/run.sh` on this machine (Lix 2.94 vs GraalVM CE 25.3):
 

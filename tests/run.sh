@@ -56,9 +56,9 @@ else
   echo "skip examples/nixpkgs-lib.nix (no <nixpkgs> on NIX_PATH)"
 fi
 
-# Real nixpkgs packages: the .drv path hashes the entire build closure (SLOW=1 adds chromium).
+# Real nixpkgs packages: the .drv path hashes the entire build closure (SLOW=1 adds chromium and nixosTests.cosmic).
 pkgs=(hello)
-[[ -n "${SLOW:-}" ]] && pkgs+=(chromium)
+[[ -n "${SLOW:-}" ]] && pkgs+=(chromium nixosTests.cosmic)
 if nix-instantiate --eval -E '<nixpkgs>' >/dev/null 2>&1; then
   for pkg in "${pkgs[@]}"; do
     theirs="$(nix-instantiate '<nixpkgs>' -A "$pkg" 2>/dev/null)"

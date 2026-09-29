@@ -127,6 +127,17 @@ public final class Translator {
         return new NixException(message + "\n       at " + Parser.location(source, pos), null);
     }
 
+    /** {@code { file; line; column; }} for a source offset, or null for sources that aren't files. */
+    public Object position(int pos) {
+        if (source.getPath() == null || source.getLength() == 0) return nixtruffle.runtime.NixNull.INSTANCE;
+        int p = Math.max(0, Math.min(pos, source.getLength() - 1));
+        java.util.TreeMap<String, Object> m = new java.util.TreeMap<>();
+        m.put("file", source.getPath());
+        m.put("line", (long) source.getLineNumber(p));
+        m.put("column", (long) source.getColumnNumber(p));
+        return nixtruffle.runtime.NixAttrs.fromMap(m);
+    }
+
     private Resolved resolve(String name, Scope scope, int pos) {
         List<int[]> withs = new ArrayList<>();
         for (Scope s = scope; s != null; s = s.parent) {
@@ -172,6 +183,7 @@ public final class Translator {
             }
             case SearchPath sp -> searchPathNode(sp);
             case Var v -> variable(v, s);
+            case CurPos c -> new Constant(position(c.pos()));
             case Select sel -> new SelectNode(strict(sel.target(), s), keys(sel.path(), s),
                     sel.fallback() == null ? null : strict(sel.fallback(), s));
             case HasAttr h -> new HasAttrNode(strict(h.target(), s), keys(h.path(), s));
@@ -345,6 +357,7 @@ public final class Translator {
             case PathLit p -> { return strict(e, s); }
             case Lambda l -> { return strict(e, s); }
             case Str str when str.isLiteral() -> { return strict(e, s); }
+            case CurPos c -> { return strict(e, s); }
             case Var v -> {
                 switch (resolve(v.name(), s, v.pos())) {
                     case Global g -> { return new Constant(g.value()); }
@@ -391,7 +404,7 @@ public final class Translator {
             int slot = fn.alloc();
             vars.put(l.arg(), slot);
             prologue = new FunctionNodes.BindArg(slot);
-            info = new NixLambda.Info(name, null, null, false, false);
+            info = new NixLambda.Info(name, l.arg(), null, null, false, false);
         } else {
             int argSlot = -1;
             if (l.arg() != null) {
@@ -418,7 +431,7 @@ public final class Translator {
             }
             prologue = new FunctionNodes.BindFormals(name, names, slots, defaultIndex, defaults.toArray(NixNode[]::new),
                     l.formals().ellipsis(), argSlot);
-            info = new NixLambda.Info(name, names, hasDefault, true, l.formals().ellipsis());
+            info = new NixLambda.Info(name, l.arg(), names, hasDefault, true, l.formals().ellipsis());
         }
         NixNode body = strict(l.body(), ls);
         NixNode full = new FunctionNodes.Body(prologue, body);

@@ -10,7 +10,7 @@ public final class NixLambda extends NixFunction {
     public final Info info;
 
     /** Static facts about the lambda, for error messages and {@code builtins.functionArgs}. */
-    public record Info(String name, String[] formals, boolean[] hasDefault, boolean hasFormals, boolean ellipsis) {}
+    public record Info(String name, String argName, String[] formals, boolean[] hasDefault, boolean hasFormals, boolean ellipsis) {}
 
     public NixLambda(RootCallTarget target, MaterializedFrame env, Info info) {
         this.target = target;

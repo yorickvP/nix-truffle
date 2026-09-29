@@ -18,6 +18,8 @@ public sealed interface Expr {
     record PathInterp(String first, List<Object> rest, int pos) implements Expr {}
     record SearchPath(String name, int pos) implements Expr {}
     record Var(String name, int pos) implements Expr {}
+    /** {@code __curPos}: a parse-time special form, not a variable. */
+    record CurPos(int pos) implements Expr {}
     record Select(Expr target, List<AttrKey> path, Expr fallback, int pos) implements Expr {}
     record HasAttr(Expr target, List<AttrKey> path, int pos) implements Expr {}
     record App(Expr fn, List<Expr> args, int pos) implements Expr {}
