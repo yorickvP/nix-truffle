@@ -1,19 +1,23 @@
 package nixtruffle.store;
 
-import com.oracle.truffle.api.TruffleFile;
+import nixtruffle.fs.Fs;
+import nixtruffle.runtime.Bytes;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeMap;
 import java.util.TreeSet;
 
 /**
  * What evaluation has put "into the store": derivations, text files and copied sources, by store
- * path. Paths are computed exactly like Nix does, without touching the real store; {@link
- * #writeTo} can later add everything through the daemon.
+ * path. Paths are computed exactly like Nix does, without touching the real store; they are
+ * written through the daemon when something needs them to exist (reading them, checking that
+ * they're valid, instantiation), unless the store is {@link #readOnly}.
  */
 public final class Store {
     /** How to produce a store path's contents. */
@@ -23,7 +27,8 @@ public final class Store {
 
     public record Text(String name, String contents, SortedSet<String> references) implements Entry {}
 
-    public record Source(String name, TruffleFile file, Nar.Filter filter, boolean recursive) implements Entry {
+    /** A local file tree ({@code path} is a byte string), NAR-hashed ({@code recursive}) or flat. */
+    public record Source(String name, String path, Nar.Filter filter, boolean recursive) implements Entry {
         public SortedSet<String> references() { return new TreeSet<>(); }
     }
 
@@ -36,6 +41,52 @@ public final class Store {
     private final Map<String, Map<String, String>> drvHashes = new HashMap<>();
     /** {@code "${./foo}"}: local path -> store path. */
     private final Map<String, String> srcToStore = new HashMap<>();
+    /** Store paths known to be valid in the real store (written by us or checked). */
+    private final Set<String> valid = new HashSet<>();
+
+    /** Don't write anything to the real store (like Nix's read-only mode). */
+    public boolean readOnly;
+    private DaemonClient daemon;
+
+    /** The daemon connection, opened on first use. */
+    public DaemonClient daemon() throws IOException {
+        if (daemon == null || daemon.isBroken()) daemon = new DaemonClient();
+        return daemon;
+    }
+
+    /** Whether we can talk to a daemon; without one, validity is judged by the file system. */
+    private boolean haveDaemon() {
+        try {
+            daemon();
+            return true;
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    /** Whether a store path exists: created by this evaluation, or valid in the real store. */
+    public boolean isValidPath(String path) throws IOException {
+        if (entries.containsKey(path) || valid.contains(path)) return true;
+        boolean ok = haveDaemon() ? daemon.isValidPath(path) : Fs.maybeLstat(path) != null;
+        if (ok) valid.add(path);
+        return ok;
+    }
+
+    /**
+     * Makes sure a store path this evaluation created exists in the real store, so that it can be
+     * read (does nothing for other paths, and in read-only mode).
+     */
+    public void ensureWritten(String storePath) throws IOException {
+        if (readOnly || !entries.containsKey(storePath) || valid.contains(storePath)) return;
+        Set<String> done = new HashSet<>(valid);
+        writeClosure(daemon(), storePath, done);
+        valid.addAll(done);
+    }
+
+    /** Records a path that has been added to the real store by other means (fetchers). */
+    public void markValid(String storePath) {
+        valid.add(storePath);
+    }
 
     public Derivation derivation(String drvPath) {
         if (entries.get(drvPath) instanceof Drv d) return d.drv();
@@ -89,20 +140,35 @@ public final class Store {
     }
 
     /** Store path of a local file tree, as {@code builtins.path} / {@code "${./foo}"} would add it. */
-    public String addSource(String name, TruffleFile file, Nar.Filter filter, boolean recursive) throws IOException {
-        Hash hash = recursive ? Nar.hash(file, filter) : Hash.of("sha256", file.readAllBytes());
-        String path = StorePaths.fixedOutputPath(recursive, hash, name);
-        entries.putIfAbsent(path, new Source(name, file, filter, recursive));
-        return path;
+    public String addSource(String name, String path, Nar.Filter filter, boolean recursive) throws IOException {
+        Hash hash = recursive ? Nar.hash(path, filter) : Hash.of("sha256", Fs.readFile(path));
+        String storePath = StorePaths.fixedOutputPath(recursive, hash, name);
+        entries.putIfAbsent(storePath, new Source(name, path, filter, recursive));
+        return storePath;
     }
 
-    public String copyPathToStore(TruffleFile file) throws IOException {
-        String key = file.getPath();
-        String cached = srcToStore.get(key);
+    /** {@code "${./foo}"}: copies are cached per path, like Nix's srcToStore. */
+    public String copyPathToStore(String path, String name) throws IOException {
+        String cached = srcToStore.get(path);
         if (cached != null) return cached;
-        String path = addSource(file.getName(), file.getCanonicalFile(), null, true);
-        srcToStore.put(key, path);
-        return path;
+        String storePath = addSource(name, path, null, true);
+        srcToStore.put(path, storePath);
+        return storePath;
+    }
+
+    /** References of any store path: ours from the registry, others from the daemon. */
+    public SortedSet<String> referencesOf(String path) {
+        Entry e = entries.get(path);
+        if (e != null) return e.references();
+        try {
+            if (haveDaemon()) {
+                DaemonClient.PathInfo info = daemon.queryPathInfo(path);
+                if (info != null) return new TreeSet<>(info.references());
+            }
+        } catch (IOException ignored) {
+            // unknown: no references
+        }
+        return new TreeSet<>();
     }
 
     /** References of a store path we created (empty for paths we don't know). */
@@ -116,7 +182,7 @@ public final class Store {
      * dependencies first. The daemon computes each path itself; a mismatch with ours is an error.
      * Returns the number of paths that were not valid yet.
      */
-    public int writeClosure(DaemonClient client, String root, java.util.Set<String> done) throws IOException {
+    public int writeClosure(DaemonClient client, String root, Set<String> done) throws IOException {
         if (!done.add(root)) return 0;
         Entry e = entries.get(root);
         if (e == null) return 0; // not created by us (e.g. builtins.storePath): must exist already
@@ -126,13 +192,11 @@ public final class Store {
         }
         if (client.isValidPath(root)) return added;
         String got = switch (e) {
-            case Text t -> client.addToStore(t.name(), "text:sha256", t.references(),
-                    out -> out.write(t.contents().getBytes(java.nio.charset.StandardCharsets.UTF_8)));
-            case Drv d -> client.addToStore(d.drv().name + ".drv", "text:sha256", d.references(),
-                    out -> out.write(d.contents().getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+            case Text t -> client.addToStore(t.name(), "text:sha256", t.references(), out -> out.write(Bytes.get(t.contents())));
+            case Drv d -> client.addToStore(d.drv().name + ".drv", "text:sha256", d.references(), out -> out.write(Bytes.get(d.contents())));
             case Source src -> src.recursive()
-                    ? client.addToStore(src.name(), "fixed:r:sha256", new TreeSet<>(), out -> Nar.dump(src.file(), src.filter(), out))
-                    : client.addToStore(src.name(), "fixed:sha256", new TreeSet<>(), out -> out.write(src.file().readAllBytes()));
+                    ? client.addToStore(src.name(), "fixed:r:sha256", new TreeSet<>(), out -> Nar.dump(src.path(), src.filter(), out))
+                    : client.addToStore(src.name(), "fixed:sha256", new TreeSet<>(), out -> Fs.readFile(src.path(), out));
         };
         if (!got.equals(root)) throw new IOException("store path mismatch: computed " + root + " but the daemon added " + got);
         return added + 1;

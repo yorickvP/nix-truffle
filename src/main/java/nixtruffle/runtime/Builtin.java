@@ -20,5 +20,5 @@ public final class Builtin extends NixFunction {
     }
 
     @Override
-    public String toString() { return "«primop " + name + "»"; }
+    public String toString() { return Bytes.fromJava("«primop ") + name + Bytes.fromJava("»"); }
 }

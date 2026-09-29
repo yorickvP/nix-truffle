@@ -78,6 +78,29 @@ public final class Values {
         return string(f);
     }
 
+    /**
+     * {@code forceStringNoCtx}: a string that must not have context (Nix rejects store paths in
+     * attribute names, file names, regexes, ...).
+     */
+    public static String stringNoCtx(Object v) {
+        Object f = Thunk.force(v);
+        if (f instanceof String s) return s;
+        if (f instanceof NixString s) {
+            String c = s.context[0];
+            String path = c.startsWith("=") ? c.substring(1) : c.startsWith("!") ? c.substring(c.indexOf('!', 1) + 1) : c;
+            throw NixException.error("the string '" + s.value + "' is not allowed to refer to a store path (such as '" + path + "')", null);
+        }
+        throw NixException.typeError(f, "a string", null);
+    }
+
+    /** {@code forceFloat}: an integer or a float, as a double. */
+    public static double number(Object v) {
+        Object f = Thunk.force(v);
+        if (f instanceof Double d) return d;
+        if (f instanceof Long l) return l;
+        throw NixException.typeError(f, "a float", null);
+    }
+
     public static long integer(Object v) {
         Object f = Thunk.force(v);
         if (f instanceof Long l) return l;
@@ -131,7 +154,7 @@ public final class Values {
         }
         if (coerceMore) {
             if (f instanceof Long l) return Long.toString(l);
-            if (f instanceof Double d) return String.format(Locale.ROOT, "%.6f", d);
+            if (f instanceof Double d) return formatFixed(d);
             if (f instanceof Boolean b) return b ? "1" : "";
             if (f instanceof NixNull) return "";
             if (f instanceof NixList l) {
@@ -150,22 +173,38 @@ public final class Values {
 
     // ----------------------------------------------------- equality, ordering
 
+    /**
+     * CppNix's {@code eqValues} on two list elements or attribute values: the same value slot (a
+     * shared thunk, or the very same value) is equal to itself even if it is a function, like
+     * CppNix's pointer comparison of {@code Value}s.
+     */
     @TruffleBoundary
     public static boolean equal(Object a, Object b) {
-        Object x = Thunk.force(a);
-        Object y = Thunk.force(b);
-        if (x == y) return true; // CppNix: identical values are equal, even functions
+        if (a == b) return true;
+        return equalValues(Thunk.force(a), Thunk.force(b));
+    }
+
+    /**
+     * {@code ==}: CppNix evaluates both operands into fresh values, so there is no identity
+     * shortcut at the top level; functions are never equal to anything.
+     */
+    @TruffleBoundary
+    public static boolean equalTop(Object a, Object b) {
+        return equalValues(Thunk.force(a), Thunk.force(b));
+    }
+
+    private static boolean equalValues(Object x, Object y) {
         if (x instanceof Long l && y instanceof Long m) return l.longValue() == m.longValue();
-        if ((x instanceof Long || x instanceof Double) && (y instanceof Long || y instanceof Double)) {
-            return ((Number) x).doubleValue() == ((Number) y).doubleValue();
-        }
+        if (x instanceof Long l && y instanceof Double d) return (double) l == d;
+        if (x instanceof Double d && y instanceof Long l) return d == (double) l;
+        if (x instanceof Double d && y instanceof Double e) return d.doubleValue() == e.doubleValue();
         if (NixString.is(x) && NixString.is(y)) return NixString.value(x).equals(NixString.value(y));
         if (x instanceof NixPath p && y instanceof NixPath q) return p.path.equals(q.path);
         if (x instanceof Boolean p && y instanceof Boolean q) return p.booleanValue() == q.booleanValue();
         if (x instanceof NixNull && y instanceof NixNull) return true;
         if (x instanceof NixList l && y instanceof NixList m) {
             if (l.size() != m.size()) return false;
-            for (int i = 0; i < l.size(); i++) if (!equal(l.forceAt(i), m.forceAt(i))) return false;
+            for (int i = 0; i < l.size(); i++) if (!equal(l.items[i], m.items[i])) return false;
             return true;
         }
         if (x instanceof NixAttrs l && y instanceof NixAttrs m) {
@@ -177,33 +216,73 @@ public final class Values {
             }
             if (l.size() != m.size()) return false;
             for (int i = 0; i < l.size(); i++) {
-                if (!l.keys[i].equals(m.keys[i])) return false;
+                if (!l.keys[i].equals(m.keys[i]) || !equal(l.values[i], m.values[i])) return false;
             }
-            for (int i = 0; i < l.size(); i++) if (!equal(l.forceAt(i), m.forceAt(i))) return false;
             return true;
         }
+        if (Foreign.isForeign(x) && Foreign.isForeign(y)) return x == y;
         return false;
     }
 
-    /** Ordering used by {@code <} and {@code builtins.lessThan}/{@code sort}. */
+    /** CppNix's {@code CompareValues}: {@code <}, {@code builtins.lessThan} and {@code sort}. */
     @TruffleBoundary
-    public static int compare(Object a, Object b, Node location) {
+    public static boolean lessThan(Object a, Object b, Node location) {
         Object x = Thunk.force(a);
         Object y = Thunk.force(b);
-        if (x instanceof Long l && y instanceof Long m) return Long.compare(l, m);
-        if ((x instanceof Long || x instanceof Double) && (y instanceof Long || y instanceof Double)) {
-            return Double.compare(((Number) x).doubleValue(), ((Number) y).doubleValue());
-        }
-        if (NixString.is(x) && NixString.is(y)) return NixString.value(x).compareTo(NixString.value(y));
-        if (x instanceof NixPath p && y instanceof NixPath q) return p.path.compareTo(q.path);
+        if (x instanceof Double d && y instanceof Long l) return d < (double) l;
+        if (x instanceof Long l && y instanceof Double d) return (double) l < d;
+        if (x instanceof Long l && y instanceof Long m) return l < m;
+        if (x instanceof Double d && y instanceof Double e) return d < e;
+        if (NixString.is(x) && NixString.is(y)) return NixString.value(x).compareTo(NixString.value(y)) < 0;
+        if (x instanceof NixPath p && y instanceof NixPath q) return p.path.compareTo(q.path) < 0;
         if (x instanceof NixList l && y instanceof NixList m) {
             for (int i = 0; ; i++) {
-                if (i == m.size()) return i == l.size() ? 0 : 1;
-                if (i == l.size()) return -1;
-                if (!equal(l.forceAt(i), m.forceAt(i))) return compare(l.items[i], m.items[i], location);
+                if (i == m.size()) return false;
+                if (i == l.size()) return true;
+                if (!equal(l.items[i], m.items[i])) return lessThan(l.items[i], m.items[i], location);
             }
         }
-        throw NixException.error("cannot compare " + typeName(x) + " with " + typeName(y), location);
+        if (!typeOf(x).equals(typeOf(y))) {
+            throw NixException.error("cannot compare " + typeName(x) + " with " + typeName(y), location);
+        }
+        throw NixException.error("cannot compare " + typeName(x) + " with " + typeName(y) + "; values of that type are incomparable", location);
+    }
+
+    /** A total order for keys ({@code genericClosure}), built from {@link #lessThan}. */
+    @TruffleBoundary
+    public static int compare(Object a, Object b, Node location) {
+        if (lessThan(a, b, location)) return -1;
+        if (lessThan(b, a, location)) return 1;
+        return 0;
+    }
+
+    /**
+     * {@code coerceToPath}: a path value, or a string holding an absolute path (canonicalised);
+     * {@code __toString} may return either. The string's context goes into {@code context}.
+     */
+    @TruffleBoundary
+    public static String coerceToPath(Object v, java.util.Set<String> context, Node location) {
+        Object f = Thunk.force(v);
+        if (f instanceof NixPath p) return p.path;
+        if (f instanceof NixAttrs a) {
+            Object toString = a.get("__toString");
+            if (toString != null) return coerceToPath(Apply.apply(toString, a, location), context, location);
+        }
+        String s = coerce(f, false, false, context, location);
+        if (s.isEmpty() || s.charAt(0) != '/') throw NixException.error("string '" + s + "' doesn't represent an absolute path", location);
+        return NixPath.canonicalize(s);
+    }
+
+    // -------------------------------------------------------- float printing
+
+    /** C's {@code %f} (std::to_string): the exact value, rounded to six decimals, ties to even. */
+    @TruffleBoundary
+    public static String formatFixed(double d) {
+        if (Double.isNaN(d)) return (Double.doubleToRawLongBits(d) < 0 ? "-" : "") + "nan";
+        if (Double.isInfinite(d)) return d < 0 ? "-inf" : "inf";
+        boolean negative = d < 0 || d == 0 && 1 / d < 0;
+        String digits = new java.math.BigDecimal(Math.abs(d)).setScale(6, java.math.RoundingMode.HALF_EVEN).toPlainString();
+        return negative ? "-" + digits : digits;
     }
 
     // -------------------------------------------------------- float printing

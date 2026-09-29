@@ -64,6 +64,7 @@ public final class Translator {
     private final NixLanguage language;
     private final Source source;
     private final String baseDir;
+    private final String path;
     /** REPL mode: names bound in the REPL scope, which the root receives as {@code arguments[0]}. */
     private final java.util.Set<String> replNames;
     private int hiddenCounter;
@@ -87,20 +88,13 @@ public final class Translator {
     private record Global(Object value) implements Resolved {}
     private record ReplVar(int depth) implements Resolved {}
 
-    public Translator(NixLanguage language, Source source) {
-        this(language, source, null);
-    }
-
-    public Translator(NixLanguage language, Source source, java.util.Set<String> replNames) {
+    /** {@code path} is the file (a byte string) or null; relative paths resolve against {@code baseDir}. */
+    public Translator(NixLanguage language, Source source, String path, String baseDir, java.util.Set<String> replNames) {
         this.language = language;
         this.source = source;
+        this.path = path;
         this.replNames = replNames;
-        String path = source.getPath();
-        if (path != null && path.contains("/")) {
-            this.baseDir = path.substring(0, path.lastIndexOf('/'));
-        } else {
-            this.baseDir = System.getProperty("user.dir");
-        }
+        this.baseDir = baseDir;
     }
 
     public NixRootNode translateFile(Expr e) {
@@ -129,10 +123,10 @@ public final class Translator {
 
     /** {@code { file; line; column; }} for a source offset, or null for sources that aren't files. */
     public Object position(int pos) {
-        if (source.getPath() == null || source.getLength() == 0) return nixtruffle.runtime.NixNull.INSTANCE;
+        if (path == null || source.getLength() == 0) return nixtruffle.runtime.NixNull.INSTANCE;
         int p = Math.max(0, Math.min(pos, source.getLength() - 1));
         java.util.TreeMap<String, Object> m = new java.util.TreeMap<>();
-        m.put("file", source.getPath());
+        m.put("file", path);
         m.put("line", (long) source.getLineNumber(p));
         m.put("column", (long) source.getColumnNumber(p));
         return nixtruffle.runtime.NixAttrs.fromMap(m);
@@ -151,7 +145,7 @@ public final class Translator {
         }
         // REPL variables and builtins shadow `with`, exactly like in CppNix where they are lexical scopes.
         if (replNames != null && replNames.contains(name)) return new ReplVar(scope.fn.level);
-        Object global = Builtins.global(name);
+        Object global = NixContext.get(null).global(name);
         if (global != null) return new Global(global);
         if (withs.isEmpty()) throw error("undefined variable '" + name + "'", pos);
         int[] depths = new int[withs.size()];
@@ -181,7 +175,8 @@ public final class Translator {
                 }
                 yield new PathInterpolationNode(first, parts);
             }
-            case SearchPath sp -> searchPathNode(sp);
+            case SearchPath sp -> strict(new App(new Var("__findFile", sp.pos()),
+                    List.of(new Var("__nixPath", sp.pos()), new Str(List.of(sp.name()), sp.pos())), sp.pos()), s);
             case Var v -> variable(v, s);
             case CurPos c -> new Constant(position(c.pos()));
             case Select sel -> new SelectNode(strict(sel.target(), s), keys(sel.path(), s),
@@ -256,89 +251,8 @@ public final class Translator {
     private String resolvePath(PathLit p) {
         String text = p.text();
         if (text.startsWith("/")) return NixPath.canonicalize(text);
-        if (text.startsWith("~/")) return NixPath.canonicalize(System.getProperty("user.home") + text.substring(1));
+        if (text.startsWith("~/")) return NixPath.canonicalize(nixtruffle.runtime.Bytes.fromJava(System.getProperty("user.home")) + text.substring(1));
         return NixPath.canonicalize(baseDir + "/" + text);
-    }
-
-    /** A failed lookup is a catchable runtime error in Nix ({@code tryEval <nixpkgs-overlays>}). */
-    private NixNode searchPathNode(SearchPath sp) {
-        String path = searchPath(sp);
-        if (path != null) return new Constant(new NixPath(path));
-        return new ControlNodes.Throw("file '" + sp.name() + "' was not found in the Nix search path (add it using $NIX_PATH or -I)");
-    }
-
-    /** {@code <name/rest>}, looked up in {@code NIX_PATH} ({@code prefix=path} or plain directories). */
-    private String searchPath(SearchPath sp) {
-        String nixPath = System.getenv("NIX_PATH");
-        String name = sp.name();
-        if (nixPath != null) {
-            for (String entry : splitNixPath(nixPath)) {
-                if (entry.isEmpty()) continue;
-                String candidate = null;
-                int eq = entry.indexOf('=');
-                if (eq >= 0) {
-                    String prefix = entry.substring(0, eq);
-                    if (name.equals(prefix) || name.startsWith(prefix + "/")) {
-                        candidate = resolveFlakeRef(entry.substring(eq + 1)) + name.substring(prefix.length());
-                    }
-                } else {
-                    candidate = resolveFlakeRef(entry) + "/" + name;
-                }
-                if (candidate != null) {
-                    TruffleFile file = NixContext.get(null).env.getPublicTruffleFile(candidate);
-                    if (file.exists()) return NixPath.canonicalize(candidate);
-                }
-            }
-        }
-        // Lix appends nix=/__corepkgs__ to the search path, for <nix/fetchurl.nix>.
-        if (name.startsWith("nix/") && NixContext.corepkg(name.substring(4)) != null) return "/__corepkgs__/" + name.substring(4);
-        return null;
-    }
-
-    /** Splits NIX_PATH on ':' except inside {@code flake:...} and URL entries (like Nix's parseNixPath). */
-    private static List<String> splitNixPath(String s) {
-        List<String> out = new ArrayList<>();
-        int start = 0;
-        int p = 0;
-        while (p < s.length()) {
-            int valueStart = start;
-            while (p < s.length() && s.charAt(p) != ':') {
-                if (s.charAt(p) == '=') valueStart = p + 1;
-                p++;
-            }
-            if (p < s.length()) {
-                String rest = s.substring(valueStart);
-                if (rest.startsWith("flake:") || rest.matches("^(https?|ftp|file|channel|git\\+[a-z]+):.*")) {
-                    p++;
-                    while (p < s.length() && s.charAt(p) != ':') p++;
-                }
-            }
-            if (p > start) out.add(s.substring(start, p));
-            start = ++p;
-        }
-        return out;
-    }
-
-    private static final Map<String, String> FLAKE_REFS = new java.util.concurrent.ConcurrentHashMap<>();
-
-    /**
-     * {@code NIX_PATH} entries may be flake references ({@code nixpkgs=flake:nixpkgs}); we let the
-     * installed nix fetch and resolve those rather than implementing the flake registry.
-     */
-    private static String resolveFlakeRef(String entry) {
-        if (!entry.startsWith("flake:")) return entry;
-        return FLAKE_REFS.computeIfAbsent(entry, e -> {
-            try {
-                Process p = new ProcessBuilder("nix", "--extra-experimental-features", "nix-command flakes",
-                        "flake", "metadata", "--json", e.substring("flake:".length()))
-                        .redirectError(ProcessBuilder.Redirect.DISCARD).start();
-                String json = new String(p.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
-                java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"path\"\\s*:\\s*\"([^\"]+)\"").matcher(json);
-                return p.waitFor() == 0 && m.find() ? m.group(1) : e;
-            } catch (java.io.IOException | InterruptedException ex) {
-                return e;
-            }
-        });
     }
 
     // -------------------------------------------------------- lazy positions

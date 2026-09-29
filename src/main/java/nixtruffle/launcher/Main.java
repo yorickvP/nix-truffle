@@ -1,13 +1,14 @@
 package nixtruffle.launcher;
 
+import nixtruffle.runtime.Bytes;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.PolyglotException;
-import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.SourceSection;
 import org.graalvm.polyglot.Value;
 
-import java.io.File;
 import java.io.IOException;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -19,8 +20,12 @@ import java.util.List;
  *   -E, --expr EXPR     evaluate EXPR instead of a file ('<nixpkgs>' also works as a file)
  *   -A, --attr PATH     select an attribute (functions along the path are auto-called)
  *   --arg NAME EXPR     argument for auto-called functions; --argstr NAME STRING likewise
+ *   -I PATH             add to the lookup path (PATH or PREFIX=PATH)
+ *   --option NAME VALUE, --extra-experimental-features FEATURES
+ *                       settings, as in nix.conf
  *   --instantiate       like nix-instantiate: write the derivations to the store, print .drv paths
  *   --read-only         with --instantiate: only compute and print the .drv paths
+ *   --read-write-mode   evaluation may write to the store (evaluation alone doesn't, by default)
  *   --repeat N          evaluate N times (to watch the JIT warm up), print the last result
  *   --time              print the time of every evaluation to stderr
  *   --test              one line per input; errors are printed as "error"
@@ -37,87 +42,156 @@ public final class Main {
         Thread thread = new Thread(null, () -> status[0] = run(args), "nix-eval", stackMb << 20);
         thread.start();
         thread.join();
+        System.out.flush();
         System.exit(status[0]);
     }
 
+    /** Settings from the command line, passed to the language as options. */
+    static final class Options {
+        final StringBuilder config = new StringBuilder();
+        final StringBuilder includePath = new StringBuilder();
+        Boolean readOnly;
+
+        Context.Builder builder(boolean defaultReadOnly) {
+            return Context.newBuilder().allowAllAccess(true)
+                    .option("nix.Config", config.toString())
+                    .option("nix.IncludePath", includePath.toString())
+                    .option("nix.ReadOnly", String.valueOf(readOnly != null ? readOnly : defaultReadOnly));
+        }
+
+        /** Handles a settings flag at {@code args[i]}; returns the number of arguments used (0 if none). */
+        int parse(String[] args, int i) {
+            switch (args[i]) {
+                case "--option" -> {
+                    config.append(args[i + 1]).append(" = ").append(args[i + 2]).append('\n');
+                    return 3;
+                }
+                case "--extra-experimental-features", "--experimental-features" -> {
+                    config.append(args[i].substring(2)).append(" = ").append(args[i + 1]).append('\n');
+                    return 2;
+                }
+                case "-I", "--include" -> {
+                    includePath.append(args[i + 1]).append('\n');
+                    return 2;
+                }
+                case "--read-only", "--readonly-mode" -> {
+                    readOnly = true;
+                    return 1;
+                }
+                case "--read-write-mode" -> {
+                    readOnly = false;
+                    return 1;
+                }
+                default -> {
+                    if (args[i].startsWith("--") && args[i].length() > 2 && i + 1 < args.length && isSettingFlag(args[i].substring(2))) {
+                        config.append(args[i].substring(2)).append(" = ").append(args[i + 1]).append('\n');
+                        return 2;
+                    }
+                    return 0;
+                }
+            }
+        }
+
+        private static boolean isSettingFlag(String name) {
+            return switch (name) {
+                case "flake-registry", "tarball-ttl", "access-tokens", "nix-path", "pure-eval", "allow-dirty", "warn-dirty" -> true;
+                default -> false;
+            };
+        }
+    }
+
+    private record Input(byte[] bytes, boolean isFile, String name) {}
+
     private static int run(String[] args) {
-        List<Source> sources = new ArrayList<>();
+        Options options = new Options();
+        List<Input> inputs = new ArrayList<>();
         List<String> attrPaths = new ArrayList<>();
         StringBuilder autoArgs = new StringBuilder("{ ");
         int repeat = 1;
         boolean time = false;
         boolean test = false;
         boolean instantiate = false;
-        boolean readOnly = false;
-        try {
-            for (int i = 0; i < args.length; i++) {
-                switch (args[i]) {
-                    case "-E", "--expr" -> sources.add(Source.newBuilder("nix", args[++i], "«string»").build());
-                    case "--repeat" -> repeat = Integer.parseInt(args[++i]);
-                    case "--time" -> time = true;
-                    case "--test" -> test = true;
-                    case "-A", "--attr" -> attrPaths.add(args[++i]);
-                    case "--arg" -> autoArgs.append(args[++i]).append(" = (").append(args[++i]).append("); ");
-                    case "--argstr" -> autoArgs.append(args[++i]).append(" = \"").append(args[++i].replace("\\", "\\\\")
-                            .replace("\"", "\\\"").replace("${", "\\${")).append("\"; ");
-                    case "--instantiate" -> instantiate = true;
-                    case "--read-only", "--readonly-mode" -> readOnly = true;
-                    case "--eval", "--strict" -> {}
-                    case "--repl" -> {
-                        return repl();
-                    }
-                    case "-h", "--help" -> {
-                        System.out.println("usage: nix-truffle [--repeat N] [--time] [--test] (FILE... | -E EXPR | --repl)");
-                        return 0;
-                    }
-                    default -> sources.add(args[i].startsWith("<") && args[i].endsWith(">")
-                            ? Source.newBuilder("nix", "import " + args[i], args[i]).build()
-                            : Source.newBuilder("nix", new File(args[i])).build());
+        for (int i = 0; i < args.length; ) {
+            int used = options.parse(args, i);
+            if (used > 0) {
+                i += used;
+                continue;
+            }
+            switch (args[i]) {
+                case "-E", "--expr" -> inputs.add(new Input(Bytes.get(Bytes.fromJava(args[++i])), false, "«string»"));
+                case "--repeat" -> repeat = Integer.parseInt(args[++i]);
+                case "--time" -> time = true;
+                case "--test" -> test = true;
+                case "-A", "--attr" -> attrPaths.add(args[++i]);
+                case "--arg" -> autoArgs.append(args[++i]).append(" = (").append(args[++i]).append("); ");
+                case "--argstr" -> autoArgs.append(args[++i]).append(" = \"").append(args[++i].replace("\\", "\\\\")
+                        .replace("\"", "\\\"").replace("${", "\\${")).append("\"; ");
+                case "--instantiate" -> instantiate = true;
+                case "--eval", "--strict", "--json" -> {}
+                case "--repl" -> {
+                    return repl(options);
+                }
+                case "-h", "--help" -> {
+                    System.out.println("usage: nix-truffle [options] (FILE... | -E EXPR | --repl)");
+                    return 0;
+                }
+                default -> {
+                    String a = args[i];
+                    inputs.add(a.startsWith("<") && a.endsWith(">")
+                            ? new Input(Bytes.get(Bytes.fromJava("import " + a)), false, a)
+                            : new Input(Bytes.get(Bytes.fromJava(new java.io.File(a).getAbsolutePath())), true, new java.io.File(a).getName()));
                 }
             }
-        } catch (IOException e) {
-            System.err.println("error: " + e.getMessage());
-            return 1;
+            i++;
         }
-        if (sources.isEmpty()) return repl();
+        if (inputs.isEmpty()) return repl(options);
 
         if (attrPaths.isEmpty()) attrPaths.add("");
         boolean hasAutoArgs = autoArgs.length() > 2;
         autoArgs.append("}");
 
         int status = 0;
-        try (Context context = Context.newBuilder().allowAllAccess(true).build()) {
-            Value show = context.eval("nix", "builtins.__show");
-            Value findAttrPath = context.eval("nix", "builtins.__findAttrPath");
-            Value autoCall = context.eval("nix", "builtins.__autoCall");
-            Value instantiateFn = context.eval("nix", "builtins.__instantiate");
+        // Like nix-instantiate: --eval doesn't write to the store, instantiation does.
+        try (Context context = options.builder(!instantiate).build()) {
+            Value internals = context.eval("nix", "__nixTruffle");
+            Value show = internals.getMember("show");
+            Value evalBytes = internals.getMember("evalBytes");
+            Value importFile = internals.getMember("importFile");
+            Value findAttrPath = internals.getMember("findAttrPath");
+            Value autoCall = internals.getMember("autoCall");
+            Value instantiateFn = internals.getMember("instantiate");
             Value autoArgsValue = context.eval("nix", autoArgs.toString());
-            for (Source source : sources) {
-                if (test) System.out.println("### " + source.getName());
+            boolean write = options.readOnly == null || !options.readOnly;
+            for (Input input : inputs) {
+                if (test) System.out.println("### " + input.name());
                 for (int run = 1; run <= repeat; run++) {
                     long start = System.nanoTime();
                     try {
-                        Value root = context.eval(source);
-                        StringBuilder out = new StringBuilder();
+                        Value root = input.isFile() ? importFile.execute(input.bytes()) : evalBytes.execute(input.bytes());
+                        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
                         for (String attrPath : attrPaths) {
                             Value v = findAttrPath.execute(autoArgsValue, attrPath, root);
                             if (instantiate) {
-                                Value paths = instantiateFn.execute(!readOnly, autoArgsValue, v);
-                                for (long j = 0; j < paths.getArraySize(); j++) out.append(paths.getArrayElement(j).asString()).append('\n');
+                                Value paths = instantiateFn.execute(write, autoArgsValue, v);
+                                for (long j = 0; j < paths.getArraySize(); j++) {
+                                    out.writeBytes(paths.getArrayElement(j).asString().getBytes(StandardCharsets.UTF_8));
+                                    out.write('\n');
+                                }
                             } else {
                                 if (hasAutoArgs) v = autoCall.execute(autoArgsValue, v);
-                                out.append(show.execute(v).asString()).append('\n');
+                                out.writeBytes(show.execute(v).as(byte[].class));
+                                out.write('\n');
                             }
                         }
                         if (time) System.err.printf("run %d: %.1f ms%n", run, (System.nanoTime() - start) / 1e6);
-                        if (run == repeat) System.out.print(out);
+                        if (run == repeat) System.out.writeBytes(out.toByteArray());
                     } catch (PolyglotException e) {
                         if (e.isHostException() || e.isInternalError()) throw e;
                         status = 1;
                         if (test) {
                             System.out.println("error");
                         } else {
-                            System.err.println(describe(e));
+                            printErr(System.err, describe(e));
                         }
                         break;
                     }
@@ -127,8 +201,8 @@ public final class Main {
         return status;
     }
 
-    private static int repl() {
-        try (Context context = Context.newBuilder().allowAllAccess(true).build()) {
+    private static int repl(Options options) {
+        try (Context context = options.builder(false).build()) {
             return new Repl(context).run();
         } catch (IOException e) {
             System.err.println("error: " + e.getMessage());
@@ -136,6 +210,13 @@ public final class Main {
         }
     }
 
+    /** Prints a message from the interpreter (a byte string, see {@link Bytes}). */
+    static void printErr(PrintStream err, String message) {
+        err.write(Bytes.output(message + "\n"), 0, Bytes.output(message + "\n").length);
+        err.flush();
+    }
+
+    /** The error message (a byte string) with a location. */
     static String describe(PolyglotException e) {
         if (e.isResourceExhausted()) return "error: stack overflow (possible infinite recursion)";
         StringBuilder sb = new StringBuilder("error: ").append(e.getMessage());

@@ -15,7 +15,8 @@ public final class NixPath extends NixObject {
     boolean isString() { return true; }
 
     @ExportMessage
-    String asString() { return path; }
+    @com.oracle.truffle.api.CompilerDirectives.TruffleBoundary
+    String asString() { return Bytes.toJava(path); }
 
     @Override
     public String toString() { return path; }

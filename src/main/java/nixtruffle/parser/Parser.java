@@ -429,7 +429,11 @@ public final class Parser {
             }
             case FLOAT -> {
                 advance();
-                return new Flt(Double.parseDouble(t.text), t.start);
+                double d = Double.parseDouble(t.text);
+                // Like strtod's ERANGE: overflow, and underflow to a subnormal or zero.
+                boolean underflow = d == 0 ? t.text.replaceAll("[eE].*", "").matches(".*[1-9].*") : Math.abs(d) < Double.MIN_NORMAL;
+                if (Double.isInfinite(d) || underflow) throw error("invalid float '" + t.text + "'", t.start);
+                return new Flt(d, t.start);
             }
             case STR_OPEN -> { return parseString(); }
             case IND_OPEN -> { return parseIndString(); }

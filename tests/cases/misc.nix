@@ -5,7 +5,7 @@
   (builtins.zipAttrsWith (n: vs: vs) [ { a = 1; } { a = 2; b = 3; } ])
   (builtins.bitAnd 12 10) (builtins.bitOr 12 10) (builtins.bitXor 12 10)
   (builtins.deepSeq [ 1 2 ] "deep")
-  (let f = x: x; in f == f)
+  (let f = x: x; in [ f ] == [ f ])
   ({ a = 1; } // { })
   (builtins.isFunction builtins.map)
   (__length [ 1 2 3 ])

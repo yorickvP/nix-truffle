@@ -78,6 +78,45 @@ public final class NixAttrs extends NixObject {
         return map;
     }
 
+    /** The same keys (and so the same shape) with other values. */
+    public NixAttrs withValues(Object[] newValues) {
+        return new NixAttrs(keys, newValues);
+    }
+
+    /** {@code removeAttrs}. */
+    @TruffleBoundary
+    public NixAttrs without(java.util.Set<String> names) {
+        String[] k = new String[keys.length];
+        Object[] v = new Object[keys.length];
+        int o = 0;
+        for (int i = 0; i < keys.length; i++) {
+            if (names.contains(keys[i])) continue;
+            k[o] = keys[i];
+            v[o++] = values[i];
+        }
+        return o == keys.length ? this : new NixAttrs(Arrays.copyOf(k, o), Arrays.copyOf(v, o));
+    }
+
+    /** The attributes at these indices (in increasing order). */
+    @TruffleBoundary
+    public NixAttrs select(java.util.List<Integer> indices) {
+        String[] k = new String[indices.size()];
+        Object[] v = new Object[indices.size()];
+        for (int i = 0; i < k.length; i++) {
+            k[i] = keys[indices.get(i)];
+            v[i] = values[indices.get(i)];
+        }
+        return new NixAttrs(k, v);
+    }
+
+    /**
+     * {@code unsafeGetAttrPos}: the position of attribute {@code i}. Positions aren't tracked, and
+     * Nix gives null for attributes defined outside files (e.g. {@code -E} expressions) anyway.
+     */
+    public Object position(int i) {
+        return NixNull.INSTANCE;
+    }
+
     /** {@code this // other}: a merge of two sorted key arrays, right side wins. */
     @TruffleBoundary
     public NixAttrs update(NixAttrs other) {
@@ -110,24 +149,28 @@ public final class NixAttrs extends NixObject {
     }
 
     @ExportMessage
-    boolean isMemberReadable(String member) { return indexOf(member) >= 0; }
+    @TruffleBoundary
+    boolean isMemberReadable(String member) { return indexOf(Bytes.fromJava(member)) >= 0; }
 
     @ExportMessage
+    @TruffleBoundary
     Object readMember(String member) throws UnknownIdentifierException {
-        int i = indexOf(member);
+        int i = indexOf(Bytes.fromJava(member));
         if (i < 0) throw UnknownIdentifierException.create(member);
-        return forceAt(i);
+        return Foreign.out(forceAt(i));
     }
 
     @ExportMessage
+    @TruffleBoundary
     boolean isMemberInvocable(String member) {
-        int i = indexOf(member);
+        int i = indexOf(Bytes.fromJava(member));
         return i >= 0 && forceAt(i) instanceof NixFunction;
     }
 
     @ExportMessage
+    @TruffleBoundary
     Object invokeMember(String member, Object[] arguments) throws UnknownIdentifierException, UnsupportedMessageException, ArityException {
-        int i = indexOf(member);
+        int i = indexOf(Bytes.fromJava(member));
         if (i < 0) throw UnknownIdentifierException.create(member);
         if (!(forceAt(i) instanceof NixFunction fn)) throw UnsupportedMessageException.create();
         return fn.execute(arguments);

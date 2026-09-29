@@ -313,11 +313,11 @@ final class Toml {
             case '"' -> sb.append('"');
             case '\\' -> sb.append('\\');
             case 'u' -> {
-                sb.appendCodePoint(Integer.parseInt(s.substring(pos, pos + 4), 16));
+                nixtruffle.runtime.Bytes.appendUtf8(sb, Integer.parseInt(s.substring(pos, pos + 4), 16));
                 pos += 4;
             }
             case 'U' -> {
-                sb.appendCodePoint(Integer.parseInt(s.substring(pos, pos + 8), 16));
+                nixtruffle.runtime.Bytes.appendUtf8(sb, Integer.parseInt(s.substring(pos, pos + 8), 16));
                 pos += 8;
             }
             default -> throw fail("invalid escape '\\" + e + "'");

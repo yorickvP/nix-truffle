@@ -1,6 +1,5 @@
 package nixtruffle.store;
 
-import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
@@ -47,7 +46,7 @@ public record Hash(String algo, byte[] bytes) {
     }
 
     public static Hash of(String algo, String data) {
-        return of(algo, data.getBytes(StandardCharsets.UTF_8));
+        return of(algo, nixtruffle.runtime.Bytes.get(data));
     }
 
     public static Hash sha256(String data) {
@@ -116,31 +115,126 @@ public record Hash(String algo, byte[] bytes) {
         return out;
     }
 
+    /** {@code parseHashAlgo}: an error for unknown algorithms (and for BLAKE3, which is experimental). */
+    public static String parseAlgo(String s) {
+        if (s.equals("blake3")) throw new IllegalArgumentException("experimental Nix feature 'blake3-hashes' is disabled");
+        if (!isAlgo(s)) throw new IllegalArgumentException("unknown hash algorithm '" + s + "', expect 'blake3', 'md5', 'sha1', 'sha256', or 'sha512'");
+        return s;
+    }
+
     /**
-     * Parses a hash in any of Nix's formats: SRI ({@code sha256-...}), {@code algo:rest}, or bare
-     * base16/base32/base64 when {@code algo} is given. An empty string gives the all-zero hash.
+     * Port of CppNix's {@code Hash::parseAny}: {@code algo:rest} or SRI {@code algo-base64}, or a
+     * bare hash when {@code algo} is given (base16, nix32 or base64, told apart by length). The
+     * prefix, if any, must agree with {@code algo}.
      */
-    public static Hash parse(String s, String algo) {
-        String rest = s;
+    public static Hash parseAny(String original, String algo) {
+        String rest = original;
         boolean sri = false;
-        int colon = s.indexOf(':');
-        int dash = s.indexOf('-');
-        if (colon > 0 && isAlgo(s.substring(0, colon))) {
-            algo = s.substring(0, colon);
-            rest = s.substring(colon + 1);
-        } else if (dash > 0 && isAlgo(s.substring(0, dash))) {
-            algo = s.substring(0, dash);
-            rest = s.substring(dash + 1);
-            sri = true;
+        String parsed = null;
+        int colon = rest.indexOf(':');
+        if (colon >= 0) {
+            parsed = parseAlgo(rest.substring(0, colon));
+            rest = rest.substring(colon + 1);
+        } else {
+            int dash = rest.indexOf('-');
+            if (dash >= 0) {
+                parsed = parseAlgo(rest.substring(0, dash));
+                rest = rest.substring(dash + 1);
+                sri = true;
+            }
         }
-        if (algo == null || algo.isEmpty()) throw new IllegalArgumentException("hash '" + s + "' does not include a type");
-        int size = size(algo);
-        if (rest.isEmpty()) return new Hash(algo, new byte[size]);
-        if (!sri && rest.length() == size * 2) return new Hash(algo, HexFormat.of().parseHex(rest));
-        if (!sri && rest.length() == (size * 8 - 1) / 5 + 1) return new Hash(algo, decodeBase32(rest, size));
-        byte[] decoded = Base64.getDecoder().decode(rest);
-        if (decoded.length != size) throw new IllegalArgumentException("hash '" + s + "' has wrong length for hash type '" + algo + "'");
-        return new Hash(algo, decoded);
+        if (parsed == null && algo == null) {
+            throw new IllegalArgumentException("hash '" + original + "' does not include a type, nor is the type otherwise known from context");
+        }
+        if (parsed != null && algo != null && !parsed.equals(algo)) {
+            throw new IllegalArgumentException("hash '" + original + "' should have type '" + algo + "'");
+        }
+        String a = parsed != null ? parsed : algo;
+        int size = size(a);
+        byte[] d;
+        String format;
+        if (sri) {
+            d = decodeBase64(rest);
+            format = "SRI";
+        } else if (rest.length() == size * 2) {
+            d = decodeBase16(rest);
+            format = "base16";
+        } else if (rest.length() == (size * 8 - 1) / 5 + 1) {
+            d = decodeNix32(rest);
+            format = "nix32";
+        } else if (rest.length() == ((4 * size / 3) + 3 & ~3)) {
+            d = decodeBase64(rest);
+            format = "Base64";
+        } else {
+            throw new IllegalArgumentException("hash '" + rest + "' has wrong length for hash algorithm '" + a + "'");
+        }
+        // A decoding error leaves nothing decoded (CppNix swallows it), which fails the length check.
+        if (d == null || d.length != size) {
+            throw new IllegalArgumentException("invalid " + format + " hash '" + rest + "', length " + (d == null ? 0 : d.length) + " != expected length " + size);
+        }
+        return new Hash(a, d);
+    }
+
+    /** {@code newHashAllowEmpty}: an empty string is the all-zero hash of {@code algo}. */
+    public static Hash parseAllowEmpty(String s, String algo) {
+        if (s.isEmpty()) {
+            if (algo == null) throw new IllegalArgumentException("empty hash requires explicit hash algorithm");
+            return new Hash(algo, new byte[size(algo)]);
+        }
+        return parseAny(s, algo);
+    }
+
+    private static byte[] decodeBase16(String s) {
+        byte[] out = new byte[s.length() / 2];
+        for (int i = 0; i < out.length; i++) {
+            int hi = Character.digit(s.charAt(2 * i), 16);
+            int lo = Character.digit(s.charAt(2 * i + 1), 16);
+            if (hi < 0 || lo < 0 || s.charAt(2 * i) > 'f' || s.charAt(2 * i + 1) > 'f') return null;
+            out[i] = (byte) (hi << 4 | lo);
+        }
+        return out;
+    }
+
+    /** CppNix's base64 decoder: stops at '=', skips newlines, no length checks. */
+    private static byte[] decodeBase64(String s) {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        final String chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        int d = 0;
+        int bits = 0;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '=') break;
+            if (c == '\n') continue;
+            int digit = chars.indexOf(c);
+            if (digit < 0) return null;
+            bits += 6;
+            d = d << 6 | digit;
+            if (bits >= 8) {
+                out.write(d >> (bits - 8) & 0xff);
+                bits -= 8;
+            }
+        }
+        return out.toByteArray();
+    }
+
+    /** CppNix's nix32 decoder: overflowing bits make the result longer (and so invalid). */
+    private static byte[] decodeNix32(String s) {
+        byte[] res = new byte[(s.length() * 5 + 7) / 8 + 1];
+        int len = 0;
+        for (int n = 0; n < s.length(); n++) {
+            int digit = BASE32_CHARS.indexOf(s.charAt(s.length() - n - 1));
+            if (digit < 0) return null;
+            int b = n * 5;
+            int i = b / 8;
+            int j = b % 8;
+            len = Math.max(len, i + 1);
+            res[i] |= (byte) (digit << j);
+            if ((digit >> (8 - j)) != 0) {
+                len = Math.max(len, i + 2);
+                res[i + 1] |= (byte) (digit >> (8 - j));
+            }
+        }
+        return Arrays.copyOf(res, len);
     }
 
     @Override

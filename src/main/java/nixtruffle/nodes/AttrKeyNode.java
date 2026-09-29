@@ -26,8 +26,8 @@ public abstract class AttrKeyNode extends Node {
         public String execute(VirtualFrame frame) {
             Object v = expr.execute(frame);
             if (v instanceof String s) return s;
-            if (v instanceof nixtruffle.runtime.NixString s) return s.value;
-            throw NixException.typeError(v, "a string", expr);
+            // Attribute names can't have context (CppNix's getName uses forceStringNoCtx).
+            return nixtruffle.runtime.Values.stringNoCtx(v);
         }
     }
 }

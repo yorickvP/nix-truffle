@@ -47,6 +47,6 @@ public final class NixList extends NixObject {
     @ExportMessage
     Object readArrayElement(long index) throws InvalidArrayIndexException {
         if (index < 0 || index >= items.length) throw InvalidArrayIndexException.create(index);
-        return forceAt((int) index);
+        return Foreign.out(forceAt((int) index));
     }
 }

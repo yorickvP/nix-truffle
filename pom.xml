@@ -10,7 +10,7 @@
 
   <properties>
     <graalvm.version>25.3.4.1</graalvm.version>
-    <maven.compiler.release>21</maven.compiler.release>
+    <maven.compiler.release>25</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
   </properties>
 

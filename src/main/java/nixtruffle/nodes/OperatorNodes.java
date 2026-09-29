@@ -101,7 +101,7 @@ public final class OperatorNodes {
         protected boolean doString(String a, String b) { return a.compareTo(b) < 0; }
 
         @Fallback
-        protected boolean doOther(Object a, Object b) { return Values.compare(a, b, this) < 0; }
+        protected boolean doOther(Object a, Object b) { return Values.lessThan(a, b, this); }
     }
 
     public abstract static class Equal extends Binary {
@@ -119,7 +119,7 @@ public final class OperatorNodes {
         protected boolean doString(String a, String b) { return a.equals(b); }
 
         @Fallback
-        protected boolean doOther(Object a, Object b) { return Values.equal(a, b); }
+        protected boolean doOther(Object a, Object b) { return Values.equalTop(a, b); }
     }
 
     /** {@code ++} */

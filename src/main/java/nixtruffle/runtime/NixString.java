@@ -49,7 +49,8 @@ public final class NixString extends NixObject {
     boolean isString() { return true; }
 
     @ExportMessage
-    String asString() { return value; }
+    @TruffleBoundary
+    String asString() { return Bytes.toJava(value); }
 
     @Override
     public String toString() { return value; }

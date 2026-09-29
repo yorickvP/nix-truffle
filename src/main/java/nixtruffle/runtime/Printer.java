@@ -37,7 +37,7 @@ public final class Printer {
             } else if (t.isDone()) {
                 v = t.getValue();
             } else {
-                sb.append("«thunk»");
+                sb.append(Bytes.fromJava("«thunk»"));
                 return;
             }
         }
@@ -52,7 +52,7 @@ public final class Printer {
             case NixAttrs a -> printAttrs(a, sb);
             case NixList l -> {
                 if (l.size() > 0 && seen.put(l, true) != null) {
-                    sb.append("«repeated»");
+                    sb.append(Bytes.fromJava("«repeated»"));
                     return;
                 }
                 sb.append("[ ");
@@ -71,7 +71,7 @@ public final class Printer {
 
     private void printAttrs(NixAttrs a, StringBuilder sb) {
         if (a.size() > 0 && seen.put(a, true) != null) {
-            sb.append("«repeated»");
+            sb.append(Bytes.fromJava("«repeated»"));
             return;
         }
         sb.append("{ ");

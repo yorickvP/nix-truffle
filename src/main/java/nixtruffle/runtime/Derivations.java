@@ -8,6 +8,6 @@ public final class Derivations {
         Object type = a.getRaw("type");
         if (type == null) return false;
         Object t = Thunk.force(type);
-        return "derivation".equals(t instanceof String s ? s : null);
+        return NixString.is(t) && NixString.value(t).equals("derivation");
     }
 }

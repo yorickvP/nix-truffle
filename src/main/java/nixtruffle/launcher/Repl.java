@@ -1,5 +1,6 @@
 package nixtruffle.launcher;
 
+import nixtruffle.runtime.Bytes;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Value;
@@ -55,14 +56,15 @@ final class Repl {
 
     Repl(Context context) {
         this.context = context;
-        this.eval = context.eval("nix", "builtins.__replEval");
-        this.bind = context.eval("nix", "builtins.__replBind");
-        this.show = context.eval("nix", "builtins.__replShow");
+        this.eval = context.eval("nix", "__nixTruffle.replEval");
+        this.bind = context.eval("nix", "__nixTruffle.replBind");
+        this.show = context.eval("nix", "__nixTruffle.replShow");
         this.update = context.eval("nix", "a: b: a // b");
         this.typeOf = context.eval("nix", "builtins.typeOf");
         this.scope = context.eval("nix", "{ }");
-        Value names = context.eval("nix", "builtins.__replGlobals null");
-        for (long i = 0; i < names.getArraySize(); i++) globals.add(names.getArrayElement(i).asString());
+        Value names = context.eval("nix", "builtins.attrNames builtins");
+        for (long i = 0; i < names.getArraySize(); i++) globals.add("builtins." + names.getArrayElement(i).asString());
+        globals.addAll(List.of("builtins", "import", "map", "toString", "throw", "abort", "derivation", "true", "false", "null"));
     }
 
     int run() throws IOException {
@@ -116,7 +118,7 @@ final class Repl {
                 } else if (e.isInterrupted() || e.isCancelled()) {
                     out.println("error: interrupted");
                 } else {
-                    out.println(Main.describe(e));
+                    out.println(Bytes.toJava(Main.describe(e)));
                 }
             }
             out.println();

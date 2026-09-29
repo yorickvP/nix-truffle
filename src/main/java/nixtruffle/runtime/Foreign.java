@@ -22,20 +22,31 @@ public final class Foreign {
         return v instanceof TruffleObject && !(v instanceof NixObject);
     }
 
+    /**
+     * A Nix value as other languages see it: strings, which are byte strings in Nix (see {@link
+     * Bytes}), become Java text.
+     */
+    @TruffleBoundary
+    public static Object out(Object v) {
+        return v instanceof String s && !Bytes.isAscii(s) ? new ByteString(s) : v;
+    }
+
     @TruffleBoundary
     public static Object toNix(Object v) {
-        if (v instanceof Long || v instanceof Double || v instanceof Boolean || v instanceof String || v instanceof NixObject) return v;
+        if (v instanceof String s) return Bytes.fromJava(s);
+        if (v instanceof ByteString b) return b.value;
+        if (v instanceof Long || v instanceof Double || v instanceof Boolean || v instanceof NixObject) return v;
         if (v instanceof Integer i) return (long) i;
         if (v instanceof Short s) return (long) s;
         if (v instanceof Byte b) return (long) b;
         if (v instanceof Float f) return (double) f;
-        if (v instanceof Character c) return String.valueOf(c);
+        if (v instanceof Character c) return Bytes.fromJava(String.valueOf(c));
         if (v == null) return NixNull.INSTANCE;
         InteropLibrary lib = InteropLibrary.getUncached(v);
         try {
             if (lib.isNull(v)) return NixNull.INSTANCE;
             if (lib.isBoolean(v)) return lib.asBoolean(v);
-            if (lib.isString(v)) return lib.asString(v);
+            if (lib.isString(v)) return Bytes.fromJava(lib.asString(v));
             if (lib.isNumber(v)) return lib.fitsInLong(v) ? (Object) lib.asLong(v) : (Object) lib.asDouble(v);
         } catch (InteropException e) {
             throw NixException.error("foreign value conversion failed: " + e.getMessage(), null);
@@ -48,8 +59,9 @@ public final class Foreign {
     public static Object select(Object obj, String key) {
         InteropLibrary lib = InteropLibrary.getUncached(obj);
         try {
-            if (lib.isMemberReadable(obj, key)) return toNix(lib.readMember(obj, key));
-            if (lib.hasHashEntries(obj) && lib.isHashEntryReadable(obj, key)) return toNix(lib.readHashValue(obj, key));
+            String member = Bytes.toJava(key);
+            if (lib.isMemberReadable(obj, member)) return toNix(lib.readMember(obj, member));
+            if (lib.hasHashEntries(obj) && lib.isHashEntryReadable(obj, member)) return toNix(lib.readHashValue(obj, member));
         } catch (InteropException e) {
             throw NixException.error("cannot read foreign member '" + key + "': " + e.getMessage(), null);
         }
@@ -69,7 +81,7 @@ public final class Foreign {
             throw NixException.error("attempt to call something which is not a function but " + Values.typeName(fn), location);
         }
         Object[] args = new Object[lazyArgs.length];
-        for (int i = 0; i < args.length; i++) args[i] = Thunk.force(lazyArgs[i]);
+        for (int i = 0; i < args.length; i++) args[i] = out(Thunk.force(lazyArgs[i]));
         try {
             return toNix(lib.execute(fn, args));
         } catch (InteropException e) {
@@ -104,7 +116,7 @@ public final class Foreign {
                 long n = ml.getArraySize(members);
                 for (long i = 0; i < n; i++) {
                     String name = InteropLibrary.getUncached().asString(ml.readArrayElement(members, i));
-                    if (lib.isMemberReadable(obj, name)) map.put(name, toNix(lib.readMember(obj, name)));
+                    if (lib.isMemberReadable(obj, name)) map.put(Bytes.fromJava(name), toNix(lib.readMember(obj, name)));
                 }
             } else if (lib.hasHashEntries(obj)) {
                 Object it = lib.getHashKeysIterator(obj);
@@ -130,9 +142,9 @@ public final class Foreign {
         InteropLibrary lib = InteropLibrary.getUncached(obj);
         try {
             String lang = lib.hasLanguage(obj) ? lib.getLanguage(obj).getSimpleName().replace("Language", "").toLowerCase() : "host";
-            return "«" + lang + " " + InteropLibrary.getUncached().asString(lib.toDisplayString(obj, false)) + "»";
+            return Bytes.fromJava("«" + lang + " " + InteropLibrary.getUncached().asString(lib.toDisplayString(obj, false)) + "»");
         } catch (InteropException e) {
-            return "«foreign»";
+            return Bytes.fromJava("«foreign»");
         }
     }
 }

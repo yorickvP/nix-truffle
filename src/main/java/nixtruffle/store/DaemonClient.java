@@ -7,7 +7,6 @@ import java.net.UnixDomainSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.SocketChannel;
-import java.nio.charset.StandardCharsets;
 import java.util.Collection;
 
 /**
@@ -30,9 +29,14 @@ public final class DaemonClient implements AutoCloseable {
 
     private static final long OP_IS_VALID_PATH = 1;
     private static final long OP_ADD_TO_STORE = 7;
+    private static final long OP_QUERY_PATH_INFO = 26;
 
     private final SocketChannel channel;
     private final ByteArrayOutputStream out = new ByteArrayOutputStream();
+    /** Set when an operation failed half-way: the connection is out of sync and must be dropped. */
+    private boolean broken;
+
+    public boolean isBroken() { return broken; }
 
     public DaemonClient() throws IOException {
         String socket = System.getenv().getOrDefault("NIX_DAEMON_SOCKET_PATH", "/nix/var/nix/daemon-socket/socket");
@@ -57,6 +61,30 @@ public final class DaemonClient implements AutoCloseable {
         flush();
         processStderr();
         return readU64() != 0;
+    }
+
+    /** What the daemon knows about a valid store path. */
+    public record PathInfo(String narHash, java.util.List<String> references, long narSize, String ca) {}
+
+    /** {@code wopQueryPathInfo}: null if the path isn't valid. */
+    public PathInfo queryPathInfo(String path) throws IOException {
+        writeU64(OP_QUERY_PATH_INFO);
+        writeString(path);
+        flush();
+        processStderr();
+        if (readU64() == 0) return null;
+        readString(); // deriver
+        String narHash = readString();
+        long n = readU64();
+        java.util.List<String> refs = new java.util.ArrayList<>();
+        for (long i = 0; i < n; i++) refs.add(readString());
+        readU64(); // registration time
+        long narSize = readU64();
+        readU64(); // ultimate
+        long sigs = readU64();
+        for (long i = 0; i < sigs; i++) readString();
+        String ca = readString();
+        return new PathInfo(narHash, refs, narSize, ca);
     }
 
     /** Streams data to the daemon in frames. */
@@ -103,8 +131,15 @@ public final class DaemonClient implements AutoCloseable {
                 if (buf.size() > 0) frame();
             }
         };
-        dump.writeTo(framed);
-        framed.close();
+        try {
+            dump.writeTo(framed);
+            framed.close();
+        } catch (IOException | RuntimeException e) {
+            // The daemon is still waiting for the rest of the data.
+            broken = true;
+            channel.close();
+            throw e;
+        }
         writeU64(0);
         flush();
         processStderr();
@@ -175,7 +210,7 @@ public final class DaemonClient implements AutoCloseable {
     }
 
     private void writeString(String s) {
-        byte[] b = s.getBytes(StandardCharsets.UTF_8);
+        byte[] b = nixtruffle.runtime.Bytes.get(s);
         writeU64(b.length);
         out.writeBytes(b);
         for (int i = b.length; i % 8 != 0; i++) out.write(0);
@@ -202,7 +237,7 @@ public final class DaemonClient implements AutoCloseable {
     private String readString() throws IOException {
         int n = (int) readU64();
         ByteBuffer buf = read(n + (8 - n % 8) % 8);
-        return new String(buf.array(), 0, n, StandardCharsets.UTF_8);
+        return nixtruffle.runtime.Bytes.of(buf.array(), 0, n);
     }
 
     @Override

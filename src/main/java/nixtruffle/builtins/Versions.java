@@ -23,10 +23,11 @@ final class Versions {
         return v.substring(start, p);
     }
 
+    /** {@code string2Int<int>}: only digit strings that fit a 32-bit int are numbers. */
     private static Long toInt(String c) {
-        if (c.isEmpty()) return null;
+        if (c.isEmpty() || !c.chars().allMatch(ch -> ch >= '0' && ch <= '9')) return null;
         try {
-            return Long.parseLong(c);
+            return (long) Integer.parseInt(c);
         } catch (NumberFormatException e) {
             return null;
         }

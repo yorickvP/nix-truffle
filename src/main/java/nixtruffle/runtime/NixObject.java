@@ -20,6 +20,6 @@ public abstract class NixObject implements TruffleObject {
     @ExportMessage
     @TruffleBoundary
     final Object toDisplayString(@SuppressWarnings("unused") boolean allowSideEffects) {
-        return Printer.show(this, allowSideEffects);
+        return Bytes.toJava(Printer.show(this, allowSideEffects));
     }
 }
