@@ -31,8 +31,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import static nixtruffle.runtime.Thunk.force;
 import static nixtruffle.runtime.Values.attrs;
@@ -50,7 +48,6 @@ public final class Builtins {
 
     private static final TreeMap<String, Object> BUILTINS = new TreeMap<>();
     private static final Map<String, Object> GLOBALS = new HashMap<>();
-    private static final Map<String, Pattern> REGEX_CACHE = new HashMap<>();
 
     /** A name visible without {@code builtins.} (or null). */
     public static Object global(String name) {
@@ -350,19 +347,22 @@ public final class Builtins {
             return NixString.make(replaceStrings(list(a[0]), list(a[1]), s, context), context);
         });
         def("match", 2, a -> {
-            Matcher m = regex(string(a[0])).matcher(string(a[1]));
-            return m.matches() ? groups(m) : NixNull.INSTANCE;
+            Regex re = Regex.compile(string(a[0]));
+            List<String> groups = re.matchFull(string(a[1]));
+            return groups == null ? NixNull.INSTANCE : groupList(groups);
         });
         def("split", 2, a -> {
-            String s = string(a[1]);
-            Matcher m = regex(string(a[0])).matcher(s);
+            Regex re = Regex.compile(string(a[0]));
+            Object str = force(a[1]);
+            String s = string(str);
             List<Object> out = new ArrayList<>();
             int last = 0;
-            while (m.find()) {
+            for (Regex.Match m : re.findAll(s)) {
                 out.add(s.substring(last, m.start()));
-                out.add(groups(m));
+                out.add(groupList(m.groups()));
                 last = m.end();
             }
+            if (out.isEmpty()) return new NixList(new Object[] {str});
             out.add(s.substring(last));
             return new NixList(out.toArray());
         });
@@ -554,26 +554,9 @@ public final class Builtins {
         return res.toString();
     }
 
-    /** POSIX extended regular expressions, translated to java.util.regex. */
-    private static Pattern regex(String posix) {
-        return REGEX_CACHE.computeIfAbsent(posix, r -> {
-            String java = r.replace("[:alpha:]", "\\p{Alpha}").replace("[:digit:]", "\\p{Digit}")
-                    .replace("[:alnum:]", "\\p{Alnum}").replace("[:space:]", "\\s").replace("[:upper:]", "\\p{Upper}")
-                    .replace("[:lower:]", "\\p{Lower}").replace("[:punct:]", "\\p{Punct}").replace("[:xdigit:]", "\\p{XDigit}");
-            try {
-                return Pattern.compile(java);
-            } catch (RuntimeException e) {
-                throw error("invalid regular expression '" + r + "'");
-            }
-        });
-    }
-
-    private static NixList groups(Matcher m) {
-        Object[] out = new Object[m.groupCount()];
-        for (int i = 0; i < out.length; i++) {
-            String g = m.group(i + 1);
-            out[i] = g == null ? NixNull.INSTANCE : g;
-        }
+    private static NixList groupList(List<String> groups) {
+        Object[] out = new Object[groups.size()];
+        for (int i = 0; i < out.length; i++) out[i] = groups.get(i) == null ? NixNull.INSTANCE : groups.get(i);
         return new NixList(out);
     }
 
