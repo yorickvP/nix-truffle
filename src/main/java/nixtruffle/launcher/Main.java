@@ -13,7 +13,7 @@ import java.util.List;
 
 /**
  * {@code nix-truffle [options] (FILE... | -E EXPR)}: evaluates and prints like
- * {@code nix-instantiate --eval --strict}.
+ * {@code nix-instantiate --eval --strict}. Without inputs (or with {@code --repl}) it starts a REPL.
  *
  * <pre>
  *   -E, --expr EXPR   evaluate EXPR instead of a file
@@ -48,8 +48,11 @@ public final class Main {
                     case "--repeat" -> repeat = Integer.parseInt(args[++i]);
                     case "--time" -> time = true;
                     case "--test" -> test = true;
+                    case "--repl" -> {
+                        return repl();
+                    }
                     case "-h", "--help" -> {
-                        System.out.println("usage: nix-truffle [--repeat N] [--time] [--test] (FILE... | -E EXPR)");
+                        System.out.println("usage: nix-truffle [--repeat N] [--time] [--test] (FILE... | -E EXPR | --repl)");
                         return 0;
                     }
                     default -> sources.add(Source.newBuilder("nix", new File(args[i])).build());
@@ -59,10 +62,7 @@ public final class Main {
             System.err.println("error: " + e.getMessage());
             return 1;
         }
-        if (sources.isEmpty()) {
-            System.err.println("usage: nix-truffle [--repeat N] [--time] [--test] (FILE... | -E EXPR)");
-            return 1;
-        }
+        if (sources.isEmpty()) return repl();
 
         int status = 0;
         try (Context context = Context.newBuilder().allowAllAccess(true).build()) {
@@ -91,7 +91,16 @@ public final class Main {
         return status;
     }
 
-    private static String describe(PolyglotException e) {
+    private static int repl() {
+        try (Context context = Context.newBuilder().allowAllAccess(true).build()) {
+            return new Repl(context).run();
+        } catch (IOException e) {
+            System.err.println("error: " + e.getMessage());
+            return 1;
+        }
+    }
+
+    static String describe(PolyglotException e) {
         if (e.isResourceExhausted()) return "error: stack overflow (possible infinite recursion)";
         StringBuilder sb = new StringBuilder("error: ").append(e.getMessage());
         SourceSection at = e.getSourceLocation();

@@ -30,6 +30,7 @@ import nixtruffle.nodes.OperatorNodesFactory.MulNodeGen;
 import nixtruffle.nodes.OperatorNodesFactory.SubNodeGen;
 import nixtruffle.nodes.ReadRawVarNode;
 import nixtruffle.nodes.ReadVarNode;
+import nixtruffle.nodes.ReplVarNode;
 import nixtruffle.nodes.SelectNode;
 import nixtruffle.nodes.WithLookupNode;
 import nixtruffle.parser.Expr;
@@ -62,6 +63,8 @@ public final class Translator {
     private final NixLanguage language;
     private final Source source;
     private final String baseDir;
+    /** REPL mode: names bound in the REPL scope, which the root receives as {@code arguments[0]}. */
+    private final java.util.Set<String> replNames;
     private int hiddenCounter;
 
     /** A root being built: its nesting level and number of frame slots. */
@@ -81,10 +84,16 @@ public final class Translator {
     private record Local(int depth, int slot, Scope scope) implements Resolved {}
     private record WithVar(int[] depths, int[] slots) implements Resolved {}
     private record Global(Object value) implements Resolved {}
+    private record ReplVar(int depth) implements Resolved {}
 
     public Translator(NixLanguage language, Source source) {
+        this(language, source, null);
+    }
+
+    public Translator(NixLanguage language, Source source, java.util.Set<String> replNames) {
         this.language = language;
         this.source = source;
+        this.replNames = replNames;
         String path = source.getPath();
         if (path != null && path.contains("/")) {
             this.baseDir = path.substring(0, path.lastIndexOf('/'));
@@ -128,7 +137,8 @@ public final class Translator {
                 if (slot != null) return new Local(depth, slot, s);
             }
         }
-        // Builtins shadow `with`, exactly like in CppNix where the base env is a lexical scope.
+        // REPL variables and builtins shadow `with`, exactly like in CppNix where they are lexical scopes.
+        if (replNames != null && replNames.contains(name)) return new ReplVar(scope.fn.level);
         Object global = Builtins.global(name);
         if (global != null) return new Global(global);
         if (withs.isEmpty()) throw error("undefined variable '" + name + "'", pos);
@@ -175,6 +185,7 @@ public final class Translator {
             case Global g -> new Constant(g.value());
             case Local l -> new ReadVarNode(l.depth(), l.slot());
             case WithVar w -> new WithLookupNode(v.name(), w.depths(), w.slots());
+            case ReplVar r -> new ReplVarNode(r.depth(), v.name());
         };
     }
 
@@ -271,6 +282,7 @@ public final class Translator {
                     case Global g -> { return new Constant(g.value()); }
                     case Local l -> { return new ReadRawVarNode(l.depth(), l.slot()); }
                     case WithVar w -> { return thunk(e, s); }
+                    case ReplVar r -> { return thunk(e, s); }
                 }
             }
             default -> { return thunk(e, s); }

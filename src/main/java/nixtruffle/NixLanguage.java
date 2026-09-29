@@ -43,6 +43,14 @@ public final class NixLanguage extends TruffleLanguage<NixContext> {
         return new Translator(this, source).translateFile(new Parser(source).parseFile()).getCallTarget();
     }
 
+    /**
+     * Parses a REPL input. Free variables may refer to the REPL scope: an attrset passed as the
+     * single call argument (they shadow builtins, like in {@code nix repl}).
+     */
+    public RootCallTarget parseRepl(Source source, java.util.Set<String> scopeNames) {
+        return new Translator(this, source, scopeNames).translateFile(new Parser(source).parseFile()).getCallTarget();
+    }
+
     public RootCallTarget applyThunkTarget() {
         if (applyThunkTarget == null) {
             CompilerDirectives.transferToInterpreterAndInvalidate();

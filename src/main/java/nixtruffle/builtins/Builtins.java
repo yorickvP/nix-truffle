@@ -15,6 +15,7 @@ import nixtruffle.runtime.NixList;
 import nixtruffle.runtime.NixNull;
 import nixtruffle.runtime.NixPath;
 import nixtruffle.runtime.Printer;
+import nixtruffle.runtime.ReplPrinter;
 import nixtruffle.runtime.Thunk;
 import nixtruffle.runtime.Values;
 
@@ -465,8 +466,21 @@ public final class Builtins {
             });
         }
 
-        // Not a real Nix builtin: renders a value like `nix-instantiate --eval --strict`.
+        // Not real Nix builtins: rendering for the CLI, and the REPL's entry points.
         def("__show", 1, a -> Printer.show(a[0], true));
+        def("__replShow", 2, a -> ReplPrinter.show(a[1], (int) integer(a[0])));
+        def("__replEval", 2, a -> {
+            NixAttrs scope = attrs(a[0]);
+            return parseRepl(scope, string(a[1])).call(scope);
+        });
+        def("__replBind", 3, a -> {
+            // Parsed now (so syntax errors show up immediately), evaluated lazily in the old scope.
+            NixAttrs scope = attrs(a[0]);
+            TreeMap<String, Object> map = scope.toMap();
+            map.put(string(a[1]), new Thunk(parseRepl(scope, string(a[2])), scope));
+            return NixAttrs.fromMap(map);
+        });
+        def("__replGlobals", 1, a -> new NixList(GLOBALS.keySet().stream().filter(n -> !n.startsWith("__")).sorted().toArray()));
 
         NixAttrs builtins = NixAttrs.fromMap(new TreeMap<>(BUILTINS));
         BUILTINS.put("builtins", builtins);
@@ -586,6 +600,11 @@ public final class Builtins {
         }
         ctx.importCache.put(key, result);
         return result;
+    }
+
+    private static com.oracle.truffle.api.RootCallTarget parseRepl(NixAttrs scope, String code) {
+        Source source = Source.newBuilder("nix", code, "«repl»").build();
+        return NixContext.get(null).language.parseRepl(source, new java.util.HashSet<>(Arrays.asList(scope.keys)));
     }
 
     private static Object polyglotEval(String language, String code) {
