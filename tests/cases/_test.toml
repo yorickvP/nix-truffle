@@ -1,0 +1,45 @@
+# comment
+title = "TOML \"test\" \u00e9"
+literal = 'C:\path'
+int = +1_000
+hex = 0xDEAD_beef
+oct = 0o755
+bin = 0b1101
+neg = -17
+flt = 3.1415
+exp = 5e+22
+frac = -0.01
+bools = [ true, false ]
+multi = """
+Roses are red\
+   Violets are blue"""
+lit = '''
+raw \n text'''
+quotes = """a "b" ""c"""""
+nested = [ [ 1, 2 ], [ "a", 'b' ], ]
+inline = { x = 1, y.z = "deep" }
+"quoted key" = 1
+dotted.key.path = "v"
+
+[table]
+a = 1
+sub.b = 2
+
+[table.child]
+c = [
+  1, # one
+  2,
+]
+
+[[products]]
+name = "Hammer"
+
+[[products]]
+
+[[products]]
+name = "Nail"
+[products.meta]
+sku = 284758393
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]

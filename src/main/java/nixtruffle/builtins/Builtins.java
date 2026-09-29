@@ -459,7 +459,8 @@ public final class Builtins {
 
         // Store, derivations and fetchers are out of scope; they exist so that code mentioning them
         // still resolves (Nix resolves variables statically), and fail only when actually called.
-        for (String name : List.of("fetchGit", "fetchMercurial", "fetchTarball", "fetchTree", "fetchurl", "fromTOML",
+        def("fromTOML", 1, a -> Toml.parse(string(a[0])));
+        for (String name : List.of("fetchGit", "fetchMercurial", "fetchTarball", "fetchTree", "fetchurl",
                 "scopedImport", "toXML", "findFile")) {
             def(name, 1, a -> {
                 throw error("builtins." + name + " is not supported by nix-truffle");

@@ -169,6 +169,12 @@ public final class Values {
             return true;
         }
         if (x instanceof NixAttrs l && y instanceof NixAttrs m) {
+            // Two derivations are equal if their outPaths are.
+            if (Derivations.isDerivation(l) && Derivations.isDerivation(m)) {
+                Object lo = l.getRaw("outPath");
+                Object mo = m.getRaw("outPath");
+                if (lo != null && mo != null) return equal(lo, mo);
+            }
             if (l.size() != m.size()) return false;
             for (int i = 0; i < l.size(); i++) {
                 if (!l.keys[i].equals(m.keys[i])) return false;

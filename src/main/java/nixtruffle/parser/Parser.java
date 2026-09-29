@@ -89,9 +89,10 @@ public final class Parser {
             while (q < n && isPathChar(src.charAt(q))) q++;
             segments++;
         }
+        // PATH_SEG followed by an interpolation: `./${x}`, `./dir/${x}`.
+        if (at(q) == '/' && at(q + 1) == '$' && at(q + 2) == '{') return q + 1;
         if (segments == 0) return -1;
         if (at(q) == '/') throw error("path has a trailing slash", p);
-        if (at(q) == '$' && at(q + 1) == '{') throw error("interpolated paths are not supported", p);
         return q;
     }
 
@@ -433,6 +434,7 @@ public final class Parser {
             case STR_OPEN -> { return parseString(); }
             case IND_OPEN -> { return parseIndString(); }
             case PATH, HPATH -> {
+                if (at(t.end) == '$' && at(t.end + 1) == '{') return parseInterpolatedPath(t);
                 advance();
                 return new PathLit(t.text, t.start);
             }
@@ -541,6 +543,30 @@ public final class Parser {
         Expr e = parseExpr();
         if (cur.type != T.RBRACE) throw error("unexpected " + describe(cur) + ", expecting '}'", cur.start);
         return e;
+    }
+
+    /** The INPATH lexer states: path characters and {@code ${...}} until anything else. */
+    private Expr parseInterpolatedPath(Tok t) {
+        List<Object> rest = new ArrayList<>();
+        int p = t.end;
+        String last = t.text;
+        while (true) {
+            if (at(p) == '$' && at(p + 1) == '{') {
+                rest.add(parseInterpolation(p));
+                p = cur.end;
+                last = "";
+                continue;
+            }
+            int q = p;
+            while (q < n && (isPathChar(src.charAt(q)) || src.charAt(q) == '/')) q++;
+            if (q == p) break;
+            last = src.substring(p, q);
+            rest.add(last);
+            p = q;
+        }
+        if (last.endsWith("/")) throw error("path has a trailing slash", t.start);
+        cur = lexAt(p);
+        return new PathInterp(t.text, rest, t.start);
     }
 
     private Str parseString() {

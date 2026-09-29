@@ -14,6 +14,8 @@ public sealed interface Expr {
         public String literal() { return String.join("", parts.stream().map(p -> (String) p).toList()); }
     }
     record PathLit(String text, int pos) implements Expr {}
+    /** {@code ./patches/${x}.patch}: a path literal followed by strings and interpolations. */
+    record PathInterp(String first, List<Object> rest, int pos) implements Expr {}
     record SearchPath(String name, int pos) implements Expr {}
     record Var(String name, int pos) implements Expr {}
     record Select(Expr target, List<AttrKey> path, Expr fallback, int pos) implements Expr {}

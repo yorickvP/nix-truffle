@@ -31,6 +31,7 @@ import nixtruffle.nodes.OperatorNodesFactory.SubNodeGen;
 import nixtruffle.nodes.ReadRawVarNode;
 import nixtruffle.nodes.ReadVarNode;
 import nixtruffle.nodes.ReplVarNode;
+import nixtruffle.nodes.PathInterpolationNode;
 import nixtruffle.nodes.SelectNode;
 import nixtruffle.nodes.WithLookupNode;
 import nixtruffle.parser.Expr;
@@ -159,7 +160,17 @@ public final class Translator {
             case Flt f -> new DoubleLiteral(f.value());
             case Str str -> str.isLiteral() ? new Constant(str.literal()) : interpolation(str, s);
             case PathLit p -> new Constant(new NixPath(resolvePath(p)));
-            case SearchPath sp -> new Constant(new NixPath(searchPath(sp)));
+            case PathInterp p -> {
+                // The first segment keeps its trailing slash; the whole path is canonicalized at the end.
+                String first = resolvePath(new PathLit(p.first(), p.pos())) + (p.first().endsWith("/") ? "/" : "");
+                NixNode[] parts = new NixNode[p.rest().size()];
+                for (int i = 0; i < parts.length; i++) {
+                    Object part = p.rest().get(i);
+                    parts[i] = part instanceof String lit ? new Constant(lit) : strict((Expr) part, s);
+                }
+                yield new PathInterpolationNode(first, parts);
+            }
+            case SearchPath sp -> searchPathNode(sp);
             case Var v -> variable(v, s);
             case Select sel -> new SelectNode(strict(sel.target(), s), keys(sel.path(), s),
                     sel.fallback() == null ? null : strict(sel.fallback(), s));
@@ -237,6 +248,13 @@ public final class Translator {
         return NixPath.canonicalize(baseDir + "/" + text);
     }
 
+    /** A failed lookup is a catchable runtime error in Nix ({@code tryEval <nixpkgs-overlays>}). */
+    private NixNode searchPathNode(SearchPath sp) {
+        String path = searchPath(sp);
+        if (path != null) return new Constant(new NixPath(path));
+        return new ControlNodes.Throw("file '" + sp.name() + "' was not found in the Nix search path (add it using $NIX_PATH or -I)");
+    }
+
     /** {@code <name/rest>}, looked up in {@code NIX_PATH} ({@code prefix=path} or plain directories). */
     private String searchPath(SearchPath sp) {
         String nixPath = System.getenv("NIX_PATH");
@@ -262,7 +280,7 @@ public final class Translator {
         }
         // Lix appends nix=/__corepkgs__ to the search path, for <nix/fetchurl.nix>.
         if (name.startsWith("nix/") && NixContext.corepkg(name.substring(4)) != null) return "/__corepkgs__/" + name.substring(4);
-        throw error("file '" + name + "' was not found in the Nix search path", sp.pos());
+        return null;
     }
 
     /** Splits NIX_PATH on ':' except inside {@code flake:...} and URL entries (like Nix's parseNixPath). */

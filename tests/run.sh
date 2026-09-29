@@ -56,5 +56,20 @@ else
   echo "skip examples/nixpkgs-lib.nix (no <nixpkgs> on NIX_PATH)"
 fi
 
+# Real nixpkgs packages: the .drv path hashes the entire build closure (SLOW=1 adds chromium).
+pkgs=(hello)
+[[ -n "${SLOW:-}" ]] && pkgs+=(chromium)
+if nix-instantiate --eval -E '<nixpkgs>' >/dev/null 2>&1; then
+  for pkg in "${pkgs[@]}"; do
+    theirs="$(nix-instantiate '<nixpkgs>' -A "$pkg" 2>/dev/null)"
+    ours="$("$root/bin/nix-truffle" --instantiate --read-only '<nixpkgs>' -A "$pkg" 2>&1)"
+    if [[ -n "$ours" && "$ours" == "$theirs" ]]; then
+      pass=$((pass+1))
+    else
+      fail=$((fail+1)); echo "FAIL nixpkgs#$pkg"; echo "  nix:     $theirs"; echo "  truffle: $ours" | head -3
+    fi
+  done
+fi
+
 echo "$pass passed, $fail failed"
 [[ $fail -eq 0 ]]

@@ -99,6 +99,18 @@ public final class ControlNodes {
         }
     }
 
+    /** Throws a catchable error when evaluated (e.g. a search path that could not be found). */
+    public static final class Throw extends NixNode {
+        private final String message;
+
+        public Throw(String message) { this.message = message; }
+
+        @Override
+        public Object execute(VirtualFrame frame) {
+            throw new NixException.Catchable(message, this);
+        }
+    }
+
     public static final class Not extends NixNode {
         @Child private NixNode operand;
 
