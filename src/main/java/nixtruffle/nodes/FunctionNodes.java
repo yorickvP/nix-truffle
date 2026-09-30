@@ -74,8 +74,10 @@ public final class FunctionNodes {
         private final int argSlot;
         @Child private ForceNode force = ForceNode.create();
 
-        @CompilationFinal private String[] cachedKeys;
-        @CompilationFinal(dimensions = 1) private int[] cachedIndices;
+        /** The formals' indices in an argument with these keys (one object: contexts may run this concurrently). */
+        private record Cached(String[] keys, @CompilationFinal(dimensions = 1) int[] indices) {}
+
+        @CompilationFinal private Cached cached;
         @CompilationFinal private boolean generic;
 
         public BindFormals(String functionName, String[] names, int[] slots, int[] defaultIndex, NixNode[] defaults,
@@ -113,13 +115,14 @@ public final class FunctionNodes {
         }
 
         private int[] indicesFor(NixAttrs attrs) {
-            if (attrs.keys == cachedKeys) return cachedIndices;
+            Cached c = cached;
+            if (c != null && attrs.keys == c.keys) return c.indices;
             if (!generic) {
                 CompilerDirectives.transferToInterpreterAndInvalidate();
-                if (cachedKeys == null) {
-                    cachedIndices = lookup(names, attrs.keys);
-                    cachedKeys = attrs.keys;
-                    return cachedIndices;
+                if (c == null) {
+                    c = new Cached(attrs.keys, lookup(names, attrs.keys));
+                    cached = c;
+                    return c.indices;
                 }
                 generic = true;
             }

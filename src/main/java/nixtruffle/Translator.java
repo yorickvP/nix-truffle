@@ -12,6 +12,7 @@ import nixtruffle.nodes.AttrsNode;
 import nixtruffle.nodes.ControlNodes;
 import nixtruffle.nodes.ControlNodes.WriteSlot;
 import nixtruffle.nodes.FunctionNodes;
+import nixtruffle.nodes.GlobalReadNode;
 import nixtruffle.nodes.HasAttrNode;
 import nixtruffle.nodes.InterpolationNode;
 import nixtruffle.nodes.ListNode;
@@ -67,6 +68,8 @@ public final class Translator {
     private final String path;
     /** REPL mode: names bound in the REPL scope, which the root receives as {@code arguments[0]}. */
     private final java.util.Set<String> replNames;
+    /** The names in the base environment, resolved before {@code with}. */
+    private final GlobalScope globals;
     private int hiddenCounter;
 
     /** A root being built: its nesting level and number of frame slots. */
@@ -85,12 +88,14 @@ public final class Translator {
     private sealed interface Resolved {}
     private record Local(int depth, int slot, Scope scope) implements Resolved {}
     private record WithVar(int[] depths, int[] slots) implements Resolved {}
-    private record Global(Object value) implements Resolved {}
+    /** A name in the base environment: its index in {@link #globals}, or its value if that is the same in every context. */
+    private record Global(int index, Object constant) implements Resolved {}
     private record ReplVar(int depth) implements Resolved {}
 
     /** {@code path} is the file (a byte string) or null; relative paths resolve against {@code baseDir}. */
-    public Translator(NixLanguage language, Source source, String path, String baseDir, java.util.Set<String> replNames) {
+    public Translator(NixLanguage language, Source source, String path, String baseDir, java.util.Set<String> replNames, GlobalScope globals) {
         this.language = language;
+        this.globals = globals;
         this.source = source;
         this.path = path;
         this.replNames = replNames;
@@ -146,8 +151,8 @@ public final class Translator {
         }
         // REPL variables and builtins shadow `with`, exactly like in CppNix where they are lexical scopes.
         if (replNames != null && replNames.contains(name)) return new ReplVar(scope.fn.level);
-        Object global = NixContext.get(null).global(name);
-        if (global != null) return new Global(global);
+        int global = globals.indexOf(name);
+        if (global >= 0) return new Global(global, globals.constant(global));
         if (withs.isEmpty()) throw error("undefined variable '" + name + "'", pos);
         int[] depths = new int[withs.size()];
         int[] slots = new int[withs.size()];
@@ -204,9 +209,13 @@ public final class Translator {
         return node;
     }
 
+    private NixNode global(Global g) {
+        return g.constant() != null ? new Constant(g.constant()) : new GlobalReadNode(globals, g.index());
+    }
+
     private NixNode variable(Var v, Scope s) {
         return switch (resolve(v.name(), s, v.pos())) {
-            case Global g -> new Constant(g.value());
+            case Global g -> global(g);
             case Local l -> new ReadVarNode(l.depth(), l.slot());
             case WithVar w -> new WithLookupNode(v.name(), w.depths(), w.slots());
             case ReplVar r -> new ReplVarNode(r.depth(), v.name());
@@ -280,7 +289,7 @@ public final class Translator {
             case CurPos c -> { return strict(e, s); }
             case Var v -> {
                 switch (resolve(v.name(), s, v.pos())) {
-                    case Global g -> { return new Constant(g.value()); }
+                    case Global g -> { return global(g); }
                     case Local l -> { return new ReadRawVarNode(l.depth(), l.slot()); }
                     case WithVar w -> { return thunk(e, s); }
                     case ReplVar r -> { return thunk(e, s); }

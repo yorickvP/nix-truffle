@@ -630,11 +630,18 @@ public final class Builtins {
         // `builtins.builtins` is `builtins` itself.
         TreeMap<String, Object> withSelf = new TreeMap<>(builtins);
         withSelf.put("builtins", null);
-        NixAttrs self = NixAttrs.fromMap(withSelf);
+        NixAttrs sorted = NixAttrs.fromMap(withSelf);
+        NixAttrs self = new NixAttrs(ctx.language.internKeys(sorted.keys), sorted.values);
         self.values[self.indexOf("builtins")] = self;
         globals.put("builtins", self);
         globals.put(Internals.NAME, Internals.create());
         return globals;
+    }
+
+    /** Whether {@code v} is a primop, which is the same object in every context. */
+    public static boolean isPrimOp(Object v) {
+        for (PrimOp p : PRIMOPS.values()) if (p.builtin == v) return true;
+        return false;
     }
 
     private static void constant(Map<String, Object> builtins, Map<String, Object> globals, String name, Object value) {

@@ -28,6 +28,9 @@ public final class NixContext {
     public final Settings settings;
     /** The base environment: {@code builtins} and the names visible without it. */
     private java.util.Map<String, Object> globals;
+    /** The names of {@link #globals}, and their values in that order. */
+    private GlobalScope globalScope;
+    private Object[] globalValues;
 
     /** {@code pure-eval}: files can only be read from store paths in {@link #allowedPaths}. */
     public final boolean pureEval;
@@ -80,8 +83,35 @@ public final class NixContext {
 
     /** A name in the base environment (after lexical scopes, before {@code with}), or null. */
     public Object global(String name) {
-        if (globals == null) globals = nixtruffle.builtins.Builtins.createBaseEnv(this);
+        if (globals == null) initGlobals();
         return globals.get(name);
+    }
+
+    /** The names in the base environment, which code parsed in this context is resolved against. */
+    public GlobalScope globalScope() {
+        if (globalScope == null) initGlobals();
+        return globalScope;
+    }
+
+    /** Global {@code index} of {@code scope} (see {@link nixtruffle.nodes.GlobalReadNode}). */
+    public Object globalValue(GlobalScope scope, int index) {
+        if (scope == globalScope) return globalValues[index];
+        return globalByName(scope.name(index));
+    }
+
+    /** Code parsed for another scope: another context's settings enabled other primops. */
+    @com.oracle.truffle.api.CompilerDirectives.TruffleBoundary
+    private Object globalByName(String name) {
+        Object value = global(name);
+        if (value == null) throw nixtruffle.runtime.NixException.error("undefined variable '" + name + "'", null);
+        return value;
+    }
+
+    private void initGlobals() {
+        globals = nixtruffle.builtins.Builtins.createBaseEnv(this);
+        globalScope = language.globalScope(globals);
+        globalValues = new Object[globalScope.size()];
+        for (int i = 0; i < globalValues.length; i++) globalValues[i] = globals.get(globalScope.name(i));
     }
 
     /** Prints a message (a byte string, see {@link nixtruffle.runtime.Bytes#output}) to stderr. */
