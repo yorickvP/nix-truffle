@@ -72,7 +72,7 @@ final class GitRepo {
 
     /** Runs a program, feeding it {@code stdin} and collecting its output. */
     static Output exec(List<String> cmd, Map<String, String> env, byte[] stdin) {
-        ProcessBuilder pb = new ProcessBuilder(cmd);
+        ProcessBuilder pb = nixtruffle.util.Proc.processBuilder(cmd);
         pb.environment().putAll(env);
         try {
             Process p = pb.start();
@@ -300,7 +300,7 @@ final class GitRepo {
         ByteArrayOutputStream req = new ByteArrayOutputStream();
         for (Entry b : blobs) req.writeBytes((b.oid + "\n").getBytes(java.nio.charset.StandardCharsets.US_ASCII));
         List<String> args = List.of("-C", Bytes.toJava(path), "--git-dir", gitDir, "cat-file", "--batch");
-        ProcessBuilder pb = new ProcessBuilder(concat(List.of("git"), args));
+        ProcessBuilder pb = nixtruffle.util.Proc.processBuilder(concat(List.of("git"), args));
         Process p = pb.redirectError(ProcessBuilder.Redirect.DISCARD).start();
         Thread writer = new Thread(() -> {
             try (OutputStream o = p.getOutputStream()) {

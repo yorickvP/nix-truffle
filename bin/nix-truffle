@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Run the Truffle Nix interpreter. Build first with: mvn -q package
+# With NIX_TRUFFLE_DAEMON=1, commands run in a background daemon that keeps parsed and compiled
+# code warm (see src/main/java/nixtruffle/launcher/Client.java); `nix-truffle daemon stop` stops it.
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [[ ! -f "$root/target/classpath.txt" ]]; then
@@ -8,10 +10,13 @@ if [[ ! -f "$root/target/classpath.txt" ]]; then
 fi
 java=java
 [[ -n "${JAVA_HOME:-}" ]] && java="$JAVA_HOME/bin/java"
-exec "$java" \
-  --enable-native-access=ALL-UNNAMED \
-  --sun-misc-unsafe-memory-access=allow \
-  -Dpolyglot.engine.WarnInterpreterOnly=true \
-  ${NIX_TRUFFLE_JAVA_OPTS:-} \
-  -cp "$root/target/classes:$(cat "$root/target/classpath.txt")" \
-  nixtruffle.launcher.Main "$@"
+java="$(command -v "$java" || echo "$java")"
+jvm=(--enable-native-access=ALL-UNNAMED --sun-misc-unsafe-memory-access=allow -Dpolyglot.engine.WarnInterpreterOnly=true
+  ${NIX_TRUFFLE_JAVA_OPTS:-})
+cp="$root/target/classes:$(cat "$root/target/classpath.txt")"
+if [[ "${NIX_TRUFFLE_DAEMON:-}" == 1 ]]; then
+  # The client is a small JVM that only relays: no JIT beyond C1, the smallest GC.
+  exec "$java" -XX:TieredStopAtLevel=1 -XX:+UseSerialGC -XX:-UsePerfData -cp "$root/target/classes" \
+    nixtruffle.launcher.Client "$java" "${#jvm[@]}" "${jvm[@]}" "$cp" "$@"
+fi
+exec "$java" "${jvm[@]}" -cp "$cp" nixtruffle.launcher.Main "$@"

@@ -40,7 +40,7 @@ public final class DaemonClient implements AutoCloseable {
     public boolean isBroken() { return broken; }
 
     public DaemonClient() throws IOException {
-        String socket = System.getenv().getOrDefault("NIX_DAEMON_SOCKET_PATH", "/nix/var/nix/daemon-socket/socket");
+        String socket = nixtruffle.util.Proc.env().getOrDefault("NIX_DAEMON_SOCKET_PATH", "/nix/var/nix/daemon-socket/socket");
         channel = SocketChannel.open(UnixDomainSocketAddress.of(socket));
         writeU64(WORKER_MAGIC_1);
         flush();

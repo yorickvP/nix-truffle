@@ -44,23 +44,23 @@ public final class Settings {
     /** The settings from the configuration files and {@code $NIX_CONFIG}. */
     public static Settings load() {
         Settings s = new Settings();
-        String confDir = System.getenv().getOrDefault("NIX_CONF_DIR", "/etc/nix");
+        String confDir = nixtruffle.util.Proc.env().getOrDefault("NIX_CONF_DIR", "/etc/nix");
         s.readFile(Path.of(confDir, "nix.conf"), false);
-        String userConf = System.getenv("NIX_USER_CONF_FILES");
+        String userConf = nixtruffle.util.Proc.getenv("NIX_USER_CONF_FILES");
         if (userConf != null) {
             for (String f : userConf.split(":")) if (!f.isEmpty()) s.readFile(Path.of(f), false);
         } else {
             List<String> dirs = new ArrayList<>();
-            String dataHome = System.getenv("XDG_CONFIG_HOME");
+            String dataHome = nixtruffle.util.Proc.getenv("XDG_CONFIG_HOME");
             dirs.add(dataHome != null ? dataHome : System.getProperty("user.home") + "/.config");
-            String configDirs = System.getenv().getOrDefault("XDG_CONFIG_DIRS", "/etc/xdg");
+            String configDirs = nixtruffle.util.Proc.env().getOrDefault("XDG_CONFIG_DIRS", "/etc/xdg");
             dirs.addAll(Arrays.asList(configDirs.split(":")));
             // Later files take precedence: read the least important first.
             for (int i = dirs.size() - 1; i >= 0; i--) {
                 if (!dirs.get(i).isEmpty()) s.readFile(Path.of(dirs.get(i), "nix", "nix.conf"), false);
             }
         }
-        String env = System.getenv("NIX_CONFIG");
+        String env = nixtruffle.util.Proc.getenv("NIX_CONFIG");
         if (env != null) s.parse(env, null);
         return s;
     }
@@ -156,7 +156,7 @@ public final class Settings {
      */
     public List<String> nixPath() {
         List<String> out = new ArrayList<>(includePath);
-        String env = System.getenv("NIX_PATH");
+        String env = nixtruffle.util.Proc.getenv("NIX_PATH");
         String setting = values.get("nix-path");
         if (env != null) {
             out.addAll(parseNixPath(env));

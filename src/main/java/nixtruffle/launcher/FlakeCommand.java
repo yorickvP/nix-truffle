@@ -25,7 +25,7 @@ final class FlakeCommand {
             System.err.println("usage: nix-truffle flake lock [FLAKEREF]");
             return 1;
         }
-        try (Context context = options.builder(false).build()) {
+        try (Context context = options.build(false)) {
             context.eval("nix", "__nixTruffle").getMember("flakeLock").execute((Object) Bytes.get(Bytes.fromJava(ref)));
             return 0;
         } catch (PolyglotException e) {

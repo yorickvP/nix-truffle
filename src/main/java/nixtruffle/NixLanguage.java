@@ -21,6 +21,7 @@ import nixtruffle.nodes.ApplyThunkRootNode;
 import nixtruffle.parser.Parser;
 import nixtruffle.runtime.Bytes;
 import nixtruffle.runtime.NixNull;
+import nixtruffle.util.Proc;
 
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -193,7 +194,7 @@ public final class NixLanguage extends TruffleLanguage<NixContext> {
 
     /** The current directory, as a byte string. */
     public static String cwd() {
-        return Bytes.fromJava(System.getProperty("user.dir"));
+        return Bytes.fromJava(Proc.cwd());
     }
 
     public RootCallTarget applyThunkTarget() {

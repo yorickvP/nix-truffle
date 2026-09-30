@@ -196,7 +196,7 @@ public final class Builtins {
         def("getEnv", 1, a -> {
             String name = stringNoCtx(a[0]);
             if (NixContext.get(null).settings.getBool("pure-eval")) return "";
-            String v = System.getenv(Bytes.toJava(name));
+            String v = nixtruffle.util.Proc.getenv(Bytes.toJava(name));
             return v == null ? "" : Bytes.fromJava(v);
         });
 

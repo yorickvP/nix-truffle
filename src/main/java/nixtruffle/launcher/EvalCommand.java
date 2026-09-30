@@ -4,6 +4,7 @@ import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.PolyglotException;
 
 import nixtruffle.runtime.Bytes;
+import nixtruffle.util.Proc;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -123,7 +124,7 @@ final class EvalCommand {
         if (pureEval == null) options.config.append("pure-eval = ").append(!impure && file == null).append('\n');
         if (impure) options.config.append("pure-eval = false\n");
         if (readOnly) options.readOnly = true;
-        if (pretty == null) pretty = System.console() != null && System.console().isTerminal();
+        if (pretty == null) pretty = Proc.console();
 
         StringBuilder cfg = new StringBuilder("{");
         cfg.append("\"installable\":").append(quote(installable == null ? "." : installable));
@@ -133,7 +134,7 @@ final class EvalCommand {
         cfg.append(",\"writeTo\":").append(quoteOrNull(writeTo == null ? null : absolute(writeTo)));
         cfg.append(",\"output\":").append(quote(output));
         cfg.append(",\"pretty\":").append(pretty);
-        cfg.append(",\"cwd\":").append(quote(System.getProperty("user.dir")));
+        cfg.append(",\"cwd\":").append(quote(Proc.cwd()));
         cfg.append(",\"autoArgs\":[").append(String.join(",", autoArgs)).append(']');
         cfg.append(",\"lockFlags\":{").append(lock)
                 .append("\"overrideInputs\":[").append(String.join(",", overrideInputs)).append("],")
@@ -144,7 +145,7 @@ final class EvalCommand {
                 .append("\"outputLockFile\":").append(quoteOrNull(outputLockFile)).append('}');
         cfg.append('}');
 
-        try (Context context = options.builder(false).build()) {
+        try (Context context = options.build(false)) {
             byte[] out = context.eval("nix", "__nixTruffle").getMember("nixEval")
                     .execute((Object) cfg.toString().getBytes(StandardCharsets.UTF_8)).as(byte[].class);
             System.out.write(out, 0, out.length);
@@ -180,7 +181,7 @@ final class EvalCommand {
     }
 
     private static String absolute(String path) {
-        return new java.io.File(path).getAbsolutePath();
+        return Proc.absolute(path);
     }
 
     private static String quoteOrNull(String s) {

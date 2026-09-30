@@ -154,7 +154,7 @@ final class WasmBuiltin {
         String dir = nixtruffle.fetch.Fetcher.tempDir("wat");
         try {
             Fs.writeFile(dir + "/module.wat", Bytes.get(wat), 0600);
-            Process p = new ProcessBuilder("wat2wasm", Bytes.toJava(dir) + "/module.wat", "-o", Bytes.toJava(dir) + "/module.wasm")
+            Process p = nixtruffle.util.Proc.processBuilder(java.util.List.of("wat2wasm", Bytes.toJava(dir) + "/module.wat", "-o", Bytes.toJava(dir) + "/module.wasm"))
                     .redirectErrorStream(true).start();
             String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
             if (p.waitFor() != 0) throw error("cannot compile WebAssembly text: " + Bytes.fromJava(out.strip()));

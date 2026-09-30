@@ -63,10 +63,10 @@ public final class Registry {
             if (all == null) {
                 all = new ArrayList<>();
                 all.add(new Registry(Type.FLAG));
-                String xdg = System.getenv("XDG_CONFIG_HOME");
+                String xdg = nixtruffle.util.Proc.getenv("XDG_CONFIG_HOME");
                 String config = xdg != null && !xdg.isEmpty() ? xdg : System.getProperty("user.home") + "/.config";
                 all.add(read(f, Bytes.fromJava(config + "/nix/registry.json"), Type.USER));
-                String confDir = System.getenv().getOrDefault("NIX_CONF_DIR", "/etc/nix");
+                String confDir = nixtruffle.util.Proc.env().getOrDefault("NIX_CONF_DIR", "/etc/nix");
                 all.add(read(f, Bytes.fromJava(confDir + "/registry.json"), Type.SYSTEM));
                 all.add(global());
             }

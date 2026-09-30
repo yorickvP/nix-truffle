@@ -1,6 +1,7 @@
 package nixtruffle.launcher;
 
 import nixtruffle.runtime.Bytes;
+import nixtruffle.util.Proc;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.SourceSection;
@@ -57,10 +58,21 @@ public final class Main {
         Boolean readOnly;
 
         Context.Builder builder(boolean defaultReadOnly) {
-            return Context.newBuilder().allowAllAccess(true)
+            Context.Builder builder = Context.newBuilder().allowAllAccess(true)
                     .option("nix.Config", config.toString())
                     .option("nix.IncludePath", includePath.toString())
                     .option("nix.ReadOnly", String.valueOf(readOnly != null ? readOnly : defaultReadOnly));
+            // In the daemon, contexts share its engine, and so the code they parse and compile.
+            if (Daemon.engine != null) builder.engine(Daemon.engine);
+            return builder;
+        }
+
+        /** A context for a command; a daemon client that goes away cancels its evaluation. */
+        Context build(boolean defaultReadOnly) {
+            Context context = builder(defaultReadOnly).build();
+            Proc.Client client = Proc.client();
+            if (client != null) client.cancel = () -> context.close(true);
+            return context;
         }
 
         /** Handles a settings flag at {@code args[i]}; returns the number of arguments used (0 if none). */
@@ -114,7 +126,7 @@ public final class Main {
 
     private record Input(byte[] bytes, boolean isFile, String name) {}
 
-    private static int run(String[] args) {
+    static int run(String[] args) {
         Options options = new Options();
         List<Input> inputs = new ArrayList<>();
         List<String> attrPaths = new ArrayList<>();
@@ -159,12 +171,15 @@ public final class Main {
                     String a = args[i];
                     inputs.add(a.startsWith("<") && a.endsWith(">")
                             ? new Input(Bytes.get(Bytes.fromJava("import " + a)), false, a)
-                            : new Input(Bytes.get(Bytes.fromJava(new java.io.File(a).getAbsolutePath())), true, new java.io.File(a).getName()));
+                            : new Input(Bytes.get(Bytes.fromJava(nixtruffle.util.Proc.absolute(a))), true, new java.io.File(a).getName()));
                 }
             }
             i++;
         }
-        if (pbtServer) return PbtServer.run(options.builder(false));
+        if (pbtServer) {
+            if (Proc.client() != null) throw new Daemon.RunLocally();
+            return PbtServer.run(options.builder(false));
+        }
         if (inputs.isEmpty()) return repl(options);
 
         if (attrPaths.isEmpty()) attrPaths.add("");
@@ -173,7 +188,7 @@ public final class Main {
 
         int status = 0;
         // Like nix-instantiate: --eval doesn't write to the store, instantiation does.
-        try (Context context = options.builder(!instantiate).build()) {
+        try (Context context = options.build(!instantiate)) {
             Value internals = context.eval("nix", "__nixTruffle");
             Value show = internals.getMember("show");
             Value evalBytes = internals.getMember("evalBytes");
@@ -223,7 +238,9 @@ public final class Main {
     }
 
     private static int repl(Options options) {
-        try (Context context = options.builder(false).build()) {
+        // The REPL needs the terminal.
+        if (Proc.client() != null) throw new Daemon.RunLocally();
+        try (Context context = options.build(false)) {
             return new Repl(context).run();
         } catch (IOException e) {
             System.err.println("error: " + e.getMessage());

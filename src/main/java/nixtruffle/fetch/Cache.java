@@ -25,7 +25,7 @@ public final class Cache {
 
     /** {@code $XDG_CACHE_HOME/nix-truffle} (default {@code ~/.cache/nix-truffle}), as a byte string. */
     public static String cacheDir() {
-        String xdg = System.getenv("XDG_CACHE_HOME");
+        String xdg = nixtruffle.util.Proc.getenv("XDG_CACHE_HOME");
         String base = xdg != null && !xdg.isEmpty() ? xdg : System.getProperty("user.home") + "/.cache";
         return Bytes.fromJava(base) + "/nix-truffle";
     }
