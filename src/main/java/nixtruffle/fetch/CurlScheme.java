@@ -148,6 +148,11 @@ abstract class CurlScheme implements InputScheme {
             String storePath;
             if (res.notModified()) {
                 info = cached.value();
+                // Entries from before redirects' immutable links were recorded don't have one.
+                if (res.immutableUrl() != null && info.getStr("immutableUrl") == null) {
+                    info = info.copy();
+                    info.put("immutableUrl", res.immutableUrl());
+                }
                 storePath = cached.storePath();
             } else {
                 String root = tmp + "/unpacked";

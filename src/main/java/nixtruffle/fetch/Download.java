@@ -70,10 +70,15 @@ public final class Download {
             String effective = Bytes.fromJava(res.uri().toString());
             if (!effective.equals(url)) urls.add(effective);
             String etag = Bytes.fromJava(res.headers().firstValue("ETag").orElse(""));
+            // An immutable link on any response, redirects included, counts (the last one wins).
+            List<HttpResponse<InputStream>> chain = new ArrayList<>();
+            for (var r = java.util.Optional.of(res); r.isPresent(); r = r.get().previousResponse()) chain.add(0, r.get());
             String immutable = null;
-            for (String link : res.headers().allValues("Link")) {
-                Matcher m = LINK.matcher(link);
-                if (m.find()) immutable = Bytes.fromJava(URI.create(res.uri().toString()).resolve(m.group(1)).toString());
+            for (HttpResponse<InputStream> r : chain) {
+                for (String link : r.headers().allValues("Link")) {
+                    Matcher m = LINK.matcher(link);
+                    if (m.find()) immutable = Bytes.fromJava(r.uri().resolve(m.group(1)).toString());
+                }
             }
             try (InputStream in = res.body()) {
                 if (res.statusCode() == 304) return new Result(etag.isEmpty() ? expectedEtag : etag, urls, immutable, true);

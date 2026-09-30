@@ -1,0 +1,12 @@
+# Cases that fetch nixpkgs (NIXPKGS=1).
+nixpkgs#hello.name
+nixpkgs#hello
+nixpkgs#lib.version --json
+--file '<nixpkgs>' hello.name
+-f '<nixpkgs>' lib.licenses.mit --json
+--impure --expr '(import <nixpkgs> {}).hello.meta.description'
+--expr '(import <nixpkgs> {}).hello.meta.description'
+nixpkgs#legacyPackages.x86_64-linux.hello.outPath
+nixpkgs#.legacyPackages.x86_64-linux.hello.outPath --raw
+--expr '(builtins.getFlake "nixpkgs").lib.trivial.release'
+--impure --expr '(builtins.getFlake "nixpkgs").lib.trivial.release'

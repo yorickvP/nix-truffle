@@ -25,7 +25,7 @@ public final class Apply {
             if (functor != null) return apply(apply(functor, attrs, location), arg, location);
         }
         if (Foreign.isForeign(f)) return Foreign.call(f, new Object[] {arg}, location);
-        throw NixException.error("attempt to call something which is not a function but " + Values.typeName(f), location);
+        throw NixException.error("attempt to call something which is not a function but " + Values.typeName(f) + ": " + ValuePrinter.printForError(f), location);
     }
 
     public static Object apply(Object fn, Object a, Object b) {

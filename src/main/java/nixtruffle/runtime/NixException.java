@@ -15,6 +15,11 @@ public class NixException extends AbstractTruffleException {
         public Catchable(String message, Node location) { super(message, location); }
     }
 
+    /** Access to a path that pure evaluation doesn't allow; {@code pathExists} says false. */
+    public static final class Restricted extends NixException {
+        public Restricted(String message) { super(message, null); }
+    }
+
     @TruffleBoundary
     public static NixException error(String message, Node location) {
         return new NixException(message, location);
@@ -22,7 +27,7 @@ public class NixException extends AbstractTruffleException {
 
     @TruffleBoundary
     public static NixException typeError(Object value, String expected, Node location) {
-        return new NixException("value is " + Values.typeName(value) + " while " + expected + " was expected", location);
+        return new NixException("expected " + expected + " but found " + Values.typeName(value) + ": " + ValuePrinter.printForError(value), location);
     }
 
     @TruffleBoundary

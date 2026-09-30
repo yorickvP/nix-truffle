@@ -34,8 +34,11 @@ interface InputScheme {
         return null;
     }
 
-    /** Writes a file ({@code flake.lock}) into the input's source ({@code relPath} is relative to it). */
-    default void putFile(Input input, String relPath, byte[] contents) {
+    /**
+     * Writes a file ({@code flake.lock}) into the input's source ({@code relPath} is relative to
+     * it), and commits it with {@code commitMessage} if that isn't null (for Git).
+     */
+    default void putFile(Input input, String relPath, byte[] contents, String commitMessage) {
         throw new FetchException("input '" + input + "' does not support modifying file '/" + relPath + "'");
     }
 

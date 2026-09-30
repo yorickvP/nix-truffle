@@ -184,13 +184,18 @@ public final class Translator {
                     sel.fallback() == null ? null : strict(sel.fallback(), s));
             case HasAttr h -> new HasAttrNode(strict(h.target(), s), keys(h.path(), s));
             case App a -> new ApplyNode(strict(a.fn(), s), lazyAll(a.args(), s));
-            case Lambda l -> lambda(l, s, "anonymous lambda");
+            case Lambda l -> lambda(l, s, NixLambda.ANONYMOUS);
             case Let l -> let(l, s);
             case Attrs a -> attrs(a, s);
             case ListE l -> new ListNode(lazyAll(l.items(), s));
             case If i -> new ControlNodes.If(strict(i.cond(), s), strict(i.then(), s), strict(i.otherwise(), s));
             case With w -> with(w, s);
-            case Assert a -> new ControlNodes.Assert(strict(a.cond(), s), strict(a.body(), s));
+            case Assert a -> {
+                boolean eq = a.cond() instanceof BinOp b && b.op().equals("==");
+                yield new ControlNodes.Assert(strict(a.cond(), s), strict(a.body(), s),
+                        eq ? strict(((BinOp) a.cond()).left(), s) : null, eq ? strict(((BinOp) a.cond()).right(), s) : null,
+                        () -> nixtruffle.parser.ExprShow.show(a.cond(), baseDir));
+            }
             case BinOp b -> binop(b, s);
             case Not n -> new ControlNodes.Not(strict(n.operand(), s));
             case Neg n -> SubNodeGen.create(new LongLiteral(0), strict(n.operand(), s));

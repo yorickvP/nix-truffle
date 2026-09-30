@@ -11,6 +11,7 @@ import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 /**
  * {@code nix-truffle [options] (FILE... | -E EXPR)}: evaluates and prints like
@@ -30,6 +31,7 @@ import java.util.List;
  *   --time              print the time of every evaluation to stderr
  *   --test              one line per input; errors are printed as "error"
  *   --pbt-server        speak the nix-pbt evaluation protocol on stdin/stdout
+ *   eval [INSTALLABLE]  like `nix eval`: FLAKEREF#ATTRPATH, or --file/--expr (see EvalCommand)
  *   flake lock [DIR]    write DIR's flake.lock, like `nix flake lock`
  * </pre>
  */
@@ -85,8 +87,18 @@ public final class Main {
                     return 1;
                 }
                 default -> {
-                    if (args[i].startsWith("--") && args[i].length() > 2 && i + 1 < args.length && isSettingFlag(args[i].substring(2))) {
-                        config.append(args[i].substring(2)).append(" = ").append(args[i + 1]).append('\n');
+                    String name = args[i].startsWith("--") ? args[i].substring(2) : "";
+                    // Boolean settings are flags: --pure-eval, --no-pure-eval.
+                    if (BOOLEAN_SETTINGS.contains(name)) {
+                        config.append(name).append(" = true\n");
+                        return 1;
+                    }
+                    if (name.startsWith("no-") && BOOLEAN_SETTINGS.contains(name.substring(3))) {
+                        config.append(name.substring(3)).append(" = false\n");
+                        return 1;
+                    }
+                    if (i + 1 < args.length && (SETTINGS.contains(name) || name.startsWith("extra-") && SETTINGS.contains(name.substring(6)))) {
+                        config.append(name).append(" = ").append(args[i + 1]).append('\n');
                         return 2;
                     }
                     return 0;
@@ -94,12 +106,10 @@ public final class Main {
             }
         }
 
-        private static boolean isSettingFlag(String name) {
-            return switch (name) {
-                case "flake-registry", "tarball-ttl", "access-tokens", "nix-path", "pure-eval", "allow-dirty", "warn-dirty" -> true;
-                default -> false;
-            };
-        }
+        private static final Set<String> BOOLEAN_SETTINGS = Set.of("pure-eval", "allow-dirty", "warn-dirty", "use-registries", "trace-verbose",
+                "polyglot", "allow-dirty-locks", "restrict-eval");
+        private static final Set<String> SETTINGS = Set.of("flake-registry", "tarball-ttl", "access-tokens", "nix-path", "system",
+                "commit-lock-file-summary", "experimental-features");
     }
 
     private record Input(byte[] bytes, boolean isFile, String name) {}
@@ -135,11 +145,14 @@ public final class Main {
                     return repl(options);
                 }
                 case "--pbt-server" -> pbtServer = true;
+                case "eval" -> {
+                    return EvalCommand.run(options, java.util.Arrays.copyOfRange(args, i + 1, args.length));
+                }
                 case "flake" -> {
                     return FlakeCommand.run(options, java.util.Arrays.copyOfRange(args, i + 1, args.length));
                 }
                 case "-h", "--help" -> {
-                    System.out.println("usage: nix-truffle [options] (FILE... | -E EXPR | --repl | --pbt-server | flake lock)");
+                    System.out.println("usage: nix-truffle [options] (FILE... | -E EXPR | --repl | --pbt-server | eval INSTALLABLE | flake lock)");
                     return 0;
                 }
                 default -> {

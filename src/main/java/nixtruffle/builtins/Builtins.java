@@ -1,6 +1,7 @@
 package nixtruffle.builtins;
 
 import nixtruffle.NixContext;
+import nixtruffle.Settings;
 import nixtruffle.runtime.Apply;
 import nixtruffle.runtime.Arith;
 import nixtruffle.runtime.Builtin;
@@ -596,16 +597,18 @@ public final class Builtins {
         Builtin traceVerbose = new Builtin("traceVerbose", 2, ctx.settings.getBool("trace-verbose")
                 ? PRIMOPS.get("trace").builtin.impl : a -> force(a[1]));
         constant(builtins, globals, "traceVerbose", traceVerbose);
-        constant(builtins, globals, "currentTime", System.currentTimeMillis() / 1000);
-        String system = ctx.settings.get("system");
-        if (system == null) system = System.getProperty("os.arch").replace("amd64", "x86_64").replace("arm64", "aarch64") + "-" + System.getProperty("os.name").toLowerCase().replace("mac os x", "darwin");
-        constant(builtins, globals, "currentSystem", Bytes.fromJava(system));
+        // Impure constants don't exist in pure evaluation.
+        if (!ctx.pureEval) {
+            constant(builtins, globals, "currentTime", System.currentTimeMillis() / 1000);
+            constant(builtins, globals, "currentSystem", Bytes.fromJava(Settings.currentSystem(ctx.settings)));
+        }
         // Pretend to be the Lix we compare against, so version-dependent nixpkgs code agrees.
         constant(builtins, globals, "nixVersion", "2.18.3-lix");
         constant(builtins, globals, "storeDir", nixtruffle.store.StorePaths.STORE_DIR);
         constant(builtins, globals, "langVersion", 6L);
         List<Object> nixPath = new ArrayList<>();
-        for (String entry : ctx.settings.nixPath()) {
+        // Pure evaluation has no lookup path.
+        for (String entry : ctx.pureEval ? List.<String>of() : ctx.settings.nixPath()) {
             int eq = entry.indexOf('=');
             String prefix = eq < 0 ? "" : entry.substring(0, eq);
             String path = eq < 0 ? entry : entry.substring(eq + 1);
@@ -665,7 +668,7 @@ public final class Builtins {
     /** {@code parseHashAlgo}, or an error for an unknown algorithm. */
     static String hashAlgo(String algo) {
         String a = parseHashAlgoOpt(algo);
-        if (a == null) throw error("unknown hash algorithm '" + algo + "'");
+        if (a == null) throw error("unknown hash algorithm '" + algo + "', expect 'blake3', 'md5', 'sha1', 'sha256', or 'sha512'");
         return a;
     }
 

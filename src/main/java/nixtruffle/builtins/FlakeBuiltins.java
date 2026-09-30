@@ -27,6 +27,7 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.TreeMap;
 
 import static nixtruffle.runtime.Thunk.force;
@@ -421,9 +422,17 @@ public final class FlakeBuiltins {
     public static final class LockFlags {
         public boolean updateLockFile;
         public boolean writeLockFile;
+        public boolean recreateLockFile;
+        public boolean commitLockFile;
         public boolean useRegistries = true;
         public boolean allowUnlocked = true;
         public boolean failOnUnlocked;
+        /** {@code --reference-lock-file}, {@code --output-lock-file} (byte strings), or null. */
+        public String referenceLockFile, outputLockFile;
+        /** {@code --override-input}: sticky overrides of inputs, by input path. */
+        public final TreeMap<List<String>, FlakeRef> inputOverrides = new TreeMap<>(LockFile::comparePaths);
+        /** {@code --update-input}: inputs whose lock is recomputed. */
+        public final java.util.TreeSet<List<String>> inputUpdates = new java.util.TreeSet<>(LockFile::comparePaths);
     }
 
     record LockedFlake(Flake flake, LockFile lockFile, IdentityHashMap<LockFile.Node, String> nodePaths) {}
@@ -448,17 +457,36 @@ public final class FlakeBuiltins {
         Locker l = new Locker(f, flags);
         Flake flake = flake0;
         try {
-            LockFile oldLockFile = readLockFile(f, flake.lockFilePath());
+            if (!f.settings.getBool("allow-dirty") && flags.referenceLockFile != null) {
+                throw new FetchException("reference lock file was provided, but the `allow-dirty` setting is set to false");
+            }
+            LockFile oldLockFile = readLockFile(f, flags.referenceLockFile != null ? flags.referenceLockFile : flake.lockFilePath());
+            for (Map.Entry<List<String>, FlakeRef> o : flags.inputOverrides.entrySet()) {
+                FlakeInput input = new FlakeInput();
+                input.ref = o.getValue();
+                // Relative overrides are relative to the top-level flake.
+                l.overrides.put(o.getKey(), new OverrideTarget(input, flake.path, null));
+                l.explicitCliOverrides.add(o.getKey());
+            }
             LockFile newLockFile = new LockFile();
             l.nodePaths.put(newLockFile.root, flake.dir());
-            l.computeLocks(flake.inputs, newLockFile.root, List.of(), oldLockFile.root, List.of(), flake.path, false);
+            l.computeLocks(flake.inputs, newLockFile.root, List.of(), flags.recreateLockFile ? null : oldLockFile.root, List.of(), flake.path, false);
+            for (Map.Entry<List<String>, FlakeRef> o : flags.inputOverrides.entrySet()) {
+                if (!l.overridesUsed.contains(o.getKey())) {
+                    warn("the flag '--override-input " + String.join("/", o.getKey()) + " " + o.getValue() + "' does not match any input");
+                }
+            }
+            for (List<String> u : flags.inputUpdates) {
+                if (!l.updatesUsed.contains(u)) warn("'" + String.join("/", u) + "' does not match any input of this flake");
+            }
             newLockFile.check();
 
             String sourcePath = topRef.input.getSourcePath();
-            if (!newLockFile.sameAs(oldLockFile)) {
-                String diff = LockFile.diff(oldLockFile, newLockFile).stripTrailing();
+            if (!newLockFile.sameAs(oldLockFile) || flags.outputLockFile != null) {
+                String fullDiff = LockFile.diff(oldLockFile, newLockFile);
+                String diff = fullDiff.stripTrailing();
                 if (flags.writeLockFile) {
-                    if (sourcePath == null) {
+                    if (sourcePath == null && flags.outputLockFile == null) {
                         throw new FetchException("cannot write modified lock file of flake '" + topRef + "' (use '--no-write-lock-file' to ignore)");
                     }
                     FlakeRef unlocked = newLockFile.isUnlocked(f);
@@ -474,24 +502,43 @@ public final class FlakeBuiltins {
                         if (!flags.updateLockFile) {
                             throw new FetchException("flake '" + topRef + "' requires lock file changes but they're not allowed due to '--no-update-lock-file'");
                         }
-                        String relPath = (topRef.subdir.isEmpty() ? "" : topRef.subdir + "/") + "flake.lock";
-                        String outputPath = sourcePath + "/" + relPath;
-                        boolean exists;
-                        try {
-                            exists = Fs.maybeLstat(outputPath) != null;
-                        } catch (IOException e) {
-                            exists = false;
-                        }
-                        // Quoted like a std::filesystem::path.
-                        String quoted = "\"" + outputPath + "\"";
-                        if (exists) {
-                            warn(diff.isEmpty() ? "updating lock file " + quoted : "updating lock file " + quoted + ":\n" + diff);
+                        byte[] contents = Bytes.get(newLockFile + "\n");
+                        if (flags.outputLockFile != null) {
+                            if (flags.commitLockFile) throw new FetchException("'--commit-lock-file' and '--output-lock-file' are incompatible");
+                            try {
+                                Fs.writeFile(flags.outputLockFile, contents, 0666);
+                            } catch (IOException e) {
+                                throw new FetchException("cannot write '" + flags.outputLockFile + "': " + e.getMessage());
+                            }
                         } else {
-                            warn("creating lock file " + quoted + ": \n" + diff);
+                            String relPath = (topRef.subdir.isEmpty() ? "" : topRef.subdir + "/") + "flake.lock";
+                            String outputPath = sourcePath + "/" + relPath;
+                            boolean exists;
+                            try {
+                                exists = Fs.maybeLstat(outputPath) != null;
+                            } catch (IOException e) {
+                                exists = false;
+                            }
+                            // Quoted like a std::filesystem::path.
+                            String quoted = "\"" + outputPath + "\"";
+                            if (exists) {
+                                warn(diff.isEmpty() ? "updating lock file " + quoted : "updating lock file " + quoted + ":\n" + diff);
+                            } else {
+                                warn("creating lock file " + quoted + ": \n" + diff);
+                            }
+                            String commitMessage = null;
+                            if (flags.commitLockFile) {
+                                String summary = f.settings.get("commit-lock-file-summary");
+                                commitMessage = (summary == null || summary.isEmpty() ? relPath + ": " + (exists ? "Update" : "Add") : Bytes.fromJava(summary))
+                                        + "\n\nFlake lock file updates:\n\n" + fullDiff;
+                            }
+                            topRef.input.putFile(relPath, contents, commitMessage);
                         }
-                        topRef.input.putFile(relPath, Bytes.get(newLockFile + "\n"));
                         // Writing the lock file changed the flake's source: read it again.
+                        String prevRev = flake.lockedRef.input.getRev();
                         flake = getFlake(f, topRef, flags.useRegistries ? Registry.Use.ALL : Registry.Use.NO, List.of());
+                        String rev = flake.lockedRef.input.getRev();
+                        if (flags.commitLockFile && rev != null && !rev.equals(prevRev)) warn("committed new revision '" + rev + "'");
                     }
                 } else {
                     warn("not writing modified lock file of flake '" + topRef + "':\n" + diff);
@@ -520,6 +567,10 @@ public final class FlakeBuiltins {
         final TreeMap<List<String>, OverrideTarget> overrides = new TreeMap<>(LockFile::comparePaths);
         final IdentityHashMap<LockFile.Node, String> nodePaths = new IdentityHashMap<>();
         final List<FlakeRef> parents = new ArrayList<>();
+        /** {@code --override-input}s, and which overrides and {@code --update-input}s were used. */
+        final Set<List<String>> explicitCliOverrides = new java.util.HashSet<>();
+        final Set<List<String>> overridesUsed = new java.util.HashSet<>();
+        final Set<List<String>> updatesUsed = new java.util.HashSet<>();
 
         Locker(Fetcher f, LockFlags flags) {
             this.f = f;
@@ -574,6 +625,8 @@ public final class FlakeBuiltins {
                 List<String> followsPrefix, String sourcePath, boolean trustLock) {
             OverrideTarget override = overrides.get(path);
             boolean hasOverride = override != null;
+            boolean hasCliOverride = explicitCliOverrides.contains(path);
+            if (hasOverride) overridesUsed.add(path);
             FlakeInput input = hasOverride ? override.input.copy() : input2.copy();
             // Relative inputs of an override are relative to the flake that declares it.
             String overriddenSourcePath = hasOverride ? override.sourcePath : sourcePath;
@@ -592,16 +645,19 @@ public final class FlakeBuiltins {
             String resolvedPath = relative != null ? NixPath.canonicalize(parent(overriddenSourcePath) + "/" + relative) : null;
 
             LockFile.Locked oldLock = null;
-            if (oldNode != null && oldNode.inputs.get(id) instanceof LockFile.Locked old) oldLock = old;
+            updatesUsed.add(path);
+            if (oldNode != null && !flags.inputUpdates.contains(path) && oldNode.inputs.get(id) instanceof LockFile.Locked old) oldLock = old;
 
             if (oldLock != null && oldLock.originalRef.canonicalize().sameAs(input.ref.canonicalize())
-                    && Objects.equals(oldLock.parentPath, overriddenParentPath)) {
+                    && Objects.equals(oldLock.parentPath, overriddenParentPath) && !hasCliOverride) {
                 // The declaration didn't change: keep the lock.
                 LockFile.Locked childNode = new LockFile.Locked(oldLock.lockedRef, oldLock.originalRef, oldLock.isFlake, oldLock.parentPath);
                 node.inputs.put(id, childNode);
-                boolean mustRefetch = false;
+                // An --update-input of one of its inputs means fetching this flake.
+                List<String> update = flags.inputUpdates.ceiling(path);
+                boolean mustRefetch = update != null && update.size() > path.size() && update.subList(0, path.size()).equals(path);
                 TreeMap<String, FlakeInput> fakeInputs = new TreeMap<>();
-                for (Map.Entry<String, Object> i : oldLock.inputs.entrySet()) {
+                for (Map.Entry<String, Object> i : mustRefetch ? Map.<String, Object>of().entrySet() : oldLock.inputs.entrySet()) {
                     if (i.getValue() instanceof LockFile.Locked locked) {
                         FlakeInput fake = new FlakeInput();
                         fake.ref = locked.originalRef;
@@ -633,9 +689,12 @@ public final class FlakeBuiltins {
             if (!flags.allowUnlocked && !input.ref.input.isLocked(f) && relative == null) {
                 throw new FetchException("cannot update unlocked flake input '" + String.join("/", path) + "' in pure mode");
             }
-            FlakeRef ref = input.ref;
+            // The lock file records the declared input, not an --override-input (which is sticky).
+            boolean inputIsOverride = explicitCliOverrides.contains(path);
+            FlakeRef ref = input2.ref != null && inputIsOverride ? input2.ref : input.ref;
             if (input.isFlake) {
-                Flake inputFlake = getInputFlake(input.ref, resolvedPath, path);
+                Flake inputFlake = resolvedPath != null ? readFlake(f, input.ref, input.ref, input.ref, resolvedPath, path)
+                        : getFlake(f, input.ref, inputIsOverride ? Registry.Use.ALL : useInputs, path);
                 LockFile.Locked childNode = new LockFile.Locked(inputFlake.lockedRef, ref, true, overriddenParentPath);
                 node.inputs.put(id, childNode);
                 for (FlakeRef p : parents) {
@@ -675,7 +734,7 @@ public final class FlakeBuiltins {
     // ---------------------------------------------------------- calling
 
     /** {@code callFlake}: the flake's outputs and metadata, through {@code call-flake.nix}. */
-    private static Object callFlake(LockedFlake locked) {
+    static Object callFlake(LockedFlake locked) {
         NixContext ctx = NixContext.get(null);
         LockFile.Dumped dumped = locked.lockFile().toJSON();
         String lockFileStr = nixtruffle.util.Json.write(dumped.json(), 2);

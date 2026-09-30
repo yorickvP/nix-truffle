@@ -131,9 +131,9 @@ public final class Input {
         return scheme == null ? null : scheme.getSourcePath(this);
     }
 
-    public void putFile(String relPath, byte[] contents) {
+    public void putFile(String relPath, byte[] contents, String commitMessage) {
         if (scheme == null) throw new FetchException("input '" + Attrs.Json.write(attrs) + "' does not support modifying file '/" + relPath + "'");
-        scheme.putFile(this, relPath, contents);
+        scheme.putFile(this, relPath, contents, commitMessage);
     }
 
     public String getName() {

@@ -90,7 +90,7 @@ final class PathScheme implements InputScheme {
     }
 
     @Override
-    public void putFile(Input input, String relPath, byte[] contents) {
+    public void putFile(Input input, String relPath, byte[] contents, String commitMessage) {
         String path = absPath(input) + "/" + relPath;
         try {
             Fs.writeFile(path, contents, 0666);

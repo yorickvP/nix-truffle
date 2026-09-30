@@ -63,6 +63,7 @@ final class Internals {
             return NixContext.get(null).language.parse(text, Bytes.fromJava("«string»"), null, null, null).call();
         });
         put(m, "importFile", 1, a -> FileBuiltins.importFile(Bytes.of(bytesIn(a[0]))));
+        put(m, "nixEval", 1, a -> bytesOut(CliEval.run(nixtruffle.util.Json.obj(nixtruffle.util.Json.parse(Bytes.of(bytesIn(a[0])))))));
         put(m, "flakeLock", 1, a -> {
             FlakeBuiltins.lock(Bytes.of(bytesIn(a[0])));
             return nixtruffle.runtime.NixNull.INSTANCE;
@@ -120,7 +121,7 @@ final class Internals {
     // ----------------------------------------------------------------- CLI
 
     /** nix-instantiate's autoCallFunction: call functions with formals using the --arg values. */
-    private static Object autoCall(NixAttrs autoArgs, Object value) {
+    static Object autoCall(NixAttrs autoArgs, Object value) {
         Object v = force(value);
         if (v instanceof NixAttrs a && a.getRaw("__functor") != null) {
             return autoCall(autoArgs, Apply.apply(a.get("__functor"), a, null));

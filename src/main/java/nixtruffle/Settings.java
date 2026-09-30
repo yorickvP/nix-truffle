@@ -128,6 +128,14 @@ public final class Settings {
         return out;
     }
 
+    /** The {@code system} setting, or the host's system type (like {@code x86_64-linux}). */
+    public static String currentSystem(Settings settings) {
+        String system = settings.get("system");
+        if (system != null) return system;
+        return System.getProperty("os.arch").replace("amd64", "x86_64").replace("arm64", "aarch64") + "-"
+                + System.getProperty("os.name").toLowerCase().replace("mac os x", "darwin");
+    }
+
     public boolean isEnabled(String feature) {
         return experimentalFeatures().contains(feature);
     }

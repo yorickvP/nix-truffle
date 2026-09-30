@@ -168,7 +168,7 @@ public final class Values {
                 return sb.toString();
             }
         }
-        throw NixException.error("cannot coerce " + typeName(f) + " to a string", location);
+        throw NixException.error("cannot coerce " + typeName(f) + " to a string: " + ValuePrinter.printForError(f), location);
     }
 
     // ----------------------------------------------------- equality, ordering
@@ -242,10 +242,11 @@ public final class Values {
                 if (!equal(l.items[i], m.items[i])) return lessThan(l.items[i], m.items[i], location);
             }
         }
+        String values = ValuePrinter.printForError(x) + " and " + ValuePrinter.printForError(y);
         if (!typeOf(x).equals(typeOf(y))) {
-            throw NixException.error("cannot compare " + typeName(x) + " with " + typeName(y), location);
+            throw NixException.error("cannot compare " + typeName(x) + " with " + typeName(y) + "; values are " + values, location);
         }
-        throw NixException.error("cannot compare " + typeName(x) + " with " + typeName(y) + "; values of that type are incomparable", location);
+        throw NixException.error("cannot compare " + typeName(x) + " with " + typeName(y) + "; values of that type are incomparable (values are " + values + ")", location);
     }
 
     /** A total order for keys ({@code genericClosure}), built from {@link #lessThan}. */

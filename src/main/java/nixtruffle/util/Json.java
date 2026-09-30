@@ -29,6 +29,53 @@ public final class Json {
         return sb.toString();
     }
 
+    /**
+     * JSON as nlohmann's {@code dump()} writes it (compact), or re-indented like {@code dump(2)}
+     * when {@code pretty}. Scalars are kept exactly as they are.
+     */
+    public static String writeCompactAsNlohmann(String compact, boolean pretty) {
+        if (!pretty) return compact;
+        StringBuilder sb = new StringBuilder();
+        int level = 0;
+        boolean inString = false;
+        for (int i = 0; i < compact.length(); i++) {
+            char c = compact.charAt(i);
+            if (inString) {
+                sb.append(c);
+                if (c == '\\') sb.append(compact.charAt(++i));
+                else if (c == '"') inString = false;
+                continue;
+            }
+            switch (c) {
+                case '"' -> {
+                    inString = true;
+                    sb.append(c);
+                }
+                case '{', '[' -> {
+                    char close = c == '{' ? '}' : ']';
+                    if (i + 1 < compact.length() && compact.charAt(i + 1) == close) {
+                        sb.append(c).append(close);
+                        i++;
+                    } else {
+                        sb.append(c);
+                        newline(sb, 2, ++level);
+                    }
+                }
+                case '}', ']' -> {
+                    newline(sb, 2, --level);
+                    sb.append(c);
+                }
+                case ',' -> {
+                    sb.append(',');
+                    newline(sb, 2, level);
+                }
+                case ':' -> sb.append(": ");
+                default -> sb.append(c);
+            }
+        }
+        return sb.toString();
+    }
+
     /** {@code dump(indent)}: nlohmann's pretty printing. */
     public static String write(Object v, int indent) {
         StringBuilder sb = new StringBuilder();

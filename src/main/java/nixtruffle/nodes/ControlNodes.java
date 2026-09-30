@@ -31,16 +31,33 @@ public final class ControlNodes {
     public static final class Assert extends NixNode {
         @Child private NixNode cond;
         @Child private NixNode body;
+        /** For {@code assert a == b}: {@code a} and {@code b}, evaluated again to say how they differ. */
+        @Child private NixNode eqLeft;
+        @Child private NixNode eqRight;
+        /** The condition as CppNix shows it, computed when the assertion fails. */
+        private final java.util.function.Supplier<String> shown;
 
-        public Assert(NixNode cond, NixNode body) {
+        public Assert(NixNode cond, NixNode body, NixNode eqLeft, NixNode eqRight, java.util.function.Supplier<String> shown) {
             this.cond = cond;
             this.body = body;
+            this.eqLeft = eqLeft;
+            this.eqRight = eqRight;
+            this.shown = shown;
         }
 
         @Override
         public Object execute(VirtualFrame frame) {
-            if (!cond.executeCondition(frame)) throw new NixException.Catchable("assertion failed", this);
+            if (!cond.executeCondition(frame)) {
+                com.oracle.truffle.api.CompilerDirectives.transferToInterpreter();
+                if (eqLeft != null) nixtruffle.runtime.AssertEq.check(eqLeft.execute(frame), eqRight.execute(frame));
+                throw new NixException.Catchable(message(), this);
+            }
             return body.execute(frame);
+        }
+
+        @com.oracle.truffle.api.CompilerDirectives.TruffleBoundary
+        private String message() {
+            return "assertion '" + shown.get() + "' failed";
         }
     }
 

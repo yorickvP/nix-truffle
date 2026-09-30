@@ -125,9 +125,19 @@ final class FetchBuiltins {
                 input = run(() -> Input.fromURL(f, url, true));
             }
         }
-        if (!input.isDirect() && f.flakesEnabled()) {
+        NixContext ctx = NixContext.get(null);
+        if (!ctx.pureEval && !input.isDirect() && f.flakesEnabled()) {
             Input i = input;
             input = run(() -> (Input) Registry.lookup(f, i, Registry.Use.LIMITED)[0]);
+        }
+        if (ctx.pureEval && !input.isLocked(f)) {
+            Input i = input;
+            if (run(i::getNarHash) != null) {
+                ctx.printErr("warning: Input '" + run(i::toString) + "' is unlocked (e.g. lacks a Git revision) but is checked by NAR hash. "
+                        + "This is not reproducible and will break after garbage collection or when shared.");
+            } else {
+                throw error("in pure evaluation mode, '" + fetcherName + "' doesn't fetch unlocked input '" + run(i::toString) + "'");
+            }
         }
         if (params.isFinal) {
             input.attrs.put("__final", true);
@@ -234,6 +244,7 @@ final class FetchBuiltins {
             String expectedPath = StorePaths.fixedOutputPath(unpack, expectedHash, name);
             if (fetcher().isValid(expectedPath)) {
                 fetcher().addTempRoot(expectedPath);
+                ctx.allowPath(expectedPath);
                 return NixString.make(expectedPath, Set.of(expectedPath));
             }
         }
@@ -260,6 +271,7 @@ final class FetchBuiltins {
                         + "\n  got:       " + got.algo() + ":" + got.base32());
             }
         }
+        ctx.allowPath(storePath);
         return NixString.make(storePath, Set.of(storePath));
     }
 
@@ -298,11 +310,13 @@ final class FetchBuiltins {
         } else {
             url = Values.coerce(v, false, false, new TreeSet<>(), null);
         }
+        if (NixContext.get(null).pureEval && rev == null) throw error("in pure evaluation mode, 'fetchMercurial' requires a Mercurial revision");
         Attrs attrs = Attrs.of("type", "hg", "url", url.contains("://") ? url : "file://" + url, "name", name);
         if (ref != null) attrs.put("ref", ref);
         if (rev != null) attrs.put("rev", rev);
         Fetcher f = fetcher();
         Fetcher.Fetched fetched = run(() -> Input.fromAttrs(f, attrs).fetch(f));
+        NixContext.get(null).allowPath(fetched.storePath());
         Input locked = fetched.locked();
         TreeMap<String, Object> m = new TreeMap<>();
         m.put("outPath", NixString.make(fetched.storePath(), Set.of(fetched.storePath())));

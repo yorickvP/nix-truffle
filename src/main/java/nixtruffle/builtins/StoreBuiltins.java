@@ -60,6 +60,7 @@ final class StoreBuiltins {
             }
             checkName(name);
             String path = store().addText(name, contents, refs);
+            NixContext.get(null).allowPath(path);
             return NixString.make(path, Set.of(path));
         });
         Builtins.def("path", 1, a -> {
@@ -221,12 +222,18 @@ final class StoreBuiltins {
         try {
             if (!context.isEmpty() && StorePaths.toStorePath(path) != null) FileBuiltins.realiseContext(context);
             checkName(name);
+            NixContext ctx = NixContext.get(null);
             if (expected != null) {
                 String expectedPath = StorePaths.fixedOutputPath(recursive, expected, name);
-                if (store().isValidPath(expectedPath)) return NixString.make(expectedPath, Set.of(expectedPath));
+                if (store().isValidPath(expectedPath)) {
+                    ctx.allowPath(expectedPath);
+                    return NixString.make(expectedPath, Set.of(expectedPath));
+                }
             }
+            ctx.checkAccess(path);
             FileBuiltins.ensureReadable(path);
             String resolved = FileBuiltins.resolveSymlinks(path, false);
+            ctx.checkAccess(resolved);
             Nar.Filter narFilter = filter == null ? null : (p, type) -> bool(Builtins.call(filter, p, type));
             if (!recursive) {
                 Fs.Stat st = Fs.stat(resolved);
@@ -236,6 +243,7 @@ final class StoreBuiltins {
             if (expected != null && !storePath.equals(StorePaths.fixedOutputPath(recursive, expected, name))) {
                 throw error("store path mismatch in (possibly filtered) path added from '" + path + "'");
             }
+            ctx.allowPath(storePath);
             return NixString.make(storePath, Set.of(storePath));
         } catch (IOException e) {
             throw error("while adding path '" + path + "': " + e.getMessage());

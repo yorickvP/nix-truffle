@@ -74,7 +74,11 @@ public final class Fetcher {
      */
     public void mount(String storePath) {
         mounted.add(storePath);
+        onMount.accept(storePath);
     }
+
+    /** Told about every mounted tree (pure evaluation allows reading them). */
+    public java.util.function.Consumer<String> onMount = p -> {};
 
     public boolean isMounted(String storePath) {
         return mounted.contains(storePath);

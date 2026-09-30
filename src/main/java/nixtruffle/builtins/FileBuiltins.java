@@ -58,7 +58,12 @@ public final class FileBuiltins {
         Builtins.def("pathExists", 1, a -> {
             Object v = force(a[0]);
             boolean mustBeDir = NixString.is(v) && (NixString.value(v).endsWith("/") || NixString.value(v).endsWith("/."));
-            String path = realisePath(v, mustBeDir ? Symlinks.FULL : Symlinks.ANCESTORS);
+            String path;
+            try {
+                path = realisePath(v, mustBeDir ? Symlinks.FULL : Symlinks.ANCESTORS);
+            } catch (NixException.Restricted e) {
+                return false;
+            }
             try {
                 Fs.Stat st = Fs.maybeLstat(path);
                 return st != null && (!mustBeDir || st.isDirectory());
@@ -138,8 +143,13 @@ public final class FileBuiltins {
         Set<String> context = new TreeSet<>();
         String path = Values.coerceToPath(v, context, null);
         if (!context.isEmpty()) realiseContext(context);
+        NixContext ctx = NixContext.get(null);
+        ctx.checkAccess(path);
         ensureReadable(path);
-        return mode == Symlinks.NONE ? path : resolveSymlinks(path, mode == Symlinks.FULL);
+        if (mode == Symlinks.NONE) return path;
+        String resolved = resolveSymlinks(path, mode == Symlinks.FULL);
+        ctx.checkAccess(resolved);
+        return resolved;
     }
 
     /** Store paths we created are written to the real store before they are read. */
@@ -249,6 +259,7 @@ public final class FileBuiltins {
      */
     static Object importTrivialFile(String path) {
         NixContext ctx = NixContext.get(null);
+        ctx.checkAccess(path);
         ensureReadable(path);
         String file = resolveExprPath(path);
         Object cached = ctx.importCache.get(file);
@@ -346,6 +357,9 @@ public final class FileBuiltins {
             }
         }
         if (path.equals("nix/fetchurl.nix")) return "/__corepkgs__/fetchurl.nix";
+        if (NixContext.get(null).pureEval) {
+            throw new NixException.Catchable("cannot look up '<" + path + ">' in pure evaluation mode (use '--impure' to override)", null);
+        }
         throw new NixException.Catchable("file '" + path + "' was not found in the Nix search path (add it using $NIX_PATH or -I)", null);
     }
 

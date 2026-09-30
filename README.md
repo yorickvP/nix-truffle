@@ -4,8 +4,9 @@ A proof-of-concept interpreter for the Nix expression language, built on
 Truffle/GraalVM. It has full lazy semantics, a JIT (Graal compiles thunks and
 lambdas and inlines them into each other), derivations and instantiation
 through the Nix daemon, fetchers (`fetchTree`, `fetchGit`, `fetchTarball`,
-`fetchurl`, ...), flakes (`builtins.getFlake`, lock files), a REPL, and two-way
-polyglot interop with other Truffle languages (JS is bundled).
+`fetchurl`, ...), flakes (`builtins.getFlake`, lock files), a `nix eval`-compatible
+command line that takes flake references, a REPL, and two-way polyglot interop with
+other Truffle languages (JS is bundled).
 
 ```
 $ bin/nix-truffle --instantiate '<nixpkgs>' -A chromium
@@ -43,6 +44,8 @@ bin/nix-truffle -E 'EXPR' [-A attr] [--arg name expr] [--argstr name string]
 bin/nix-truffle --instantiate '<nixpkgs>' -A hello   # like nix-instantiate: writes .drv files
 bin/nix-truffle --instantiate --read-only ...        # only compute the .drv paths
 bin/nix-truffle --repeat 10 --time bench/fib.nix     # watch the JIT warm up
+bin/nix-truffle eval .#nixosConfigurations.host.config.system.build.toplevel.drvPath   # like nix eval
+bin/nix-truffle eval --raw nixpkgs#hello.name --json --file default.nix --expr ... --apply ...
 bin/nix-truffle flake lock [FLAKEREF]                # like nix flake lock (default: .)
 bin/nix-truffle --pbt-server                         # evaluator for nix-pbt (see below)
 tests/run.sh           # differential tests against nix-instantiate (SLOW=1 adds chromium)
@@ -188,6 +191,44 @@ files (version 7; `nix-truffle flake lock` writes the same file as `nix flake lo
 `call-flake.nix` to call the outputs. `builtins.getFlake` locks in memory and doesn't write
 the lock file, like Nix. `nixConfig` is checked but not applied.
 
+## `nix-truffle eval`
+
+`nix-truffle eval [option...] [installable]` works like CppNix's `nix eval`
+(`launcher/EvalCommand.java`, `builtins/CliEval.java`):
+
+- **Installables** are flake references with an optional attribute path: `.`, `.#foo`,
+  `nixpkgs#hello.name`, `github:owner/repo/ref#x`, `path:/some/dir?dir=sub#y`,
+  `git+file:///repo#z`. The default is `.`. A fragment `foo` is looked up as
+  `packages.<system>.foo`, `legacyPackages.<system>.foo`, then `foo` in the flake's outputs;
+  `.foo` means exactly `foo`; no fragment means `packages.<system>.default` or
+  `defaultPackage.<system>`. With `--file FILE` or `--expr EXPR`, the installable is an
+  attribute path into that (list indices allowed, functions called with `--arg`/`--argstr`
+  on the way).
+- **Output**: the value as `nix eval` prints it (a port of CppNix's `print.cc`: derivations as
+  `«derivation …drv»`, `«repeated»`, errors inside the value as `«error: …»`), `--json`
+  (`--pretty` when stdout is a terminal), `--raw`, `--apply EXPR`, `--write-to PATH`.
+  The store paths the output refers to (e.g. a printed `drvPath`, with its closure) are
+  written to the store afterwards, unless `--read-only`.
+- **Evaluation is pure** unless `--impure` or `--file` is given, like the new CLI: only the
+  flake's source, its inputs and the paths evaluation added to the store can be read, the
+  lookup path is empty, `builtins.currentSystem` and `currentTime` don't exist, `getEnv` is
+  empty, and fetchers only take locked inputs.
+- **Lock files** are handled like `nix eval` does: a changed lock file is written (`flake.lock`
+  in the flake's directory, `git add`ed in a Git work tree), unless `--no-write-lock-file`.
+  `--override-input PATH REF`, `--update-input PATH`, `--recreate-lock-file`,
+  `--no-update-lock-file`, `--reference-lock-file`, `--output-lock-file`,
+  `--commit-lock-file`, `--inputs-from REF` and `--override-flake FROM TO` are supported.
+- Settings flags work as in Nix: `--option NAME VALUE`, `--extra-experimental-features X`,
+  `--NAME VALUE`, `--[no-]pure-eval` and so on; `-I` too. Logging and building flags
+  (`--show-trace`, `-L`, `--no-eval-cache`, `-j`, ...) are accepted and ignored.
+
+Error messages follow CppNix's, since `nix eval` prints them inside values: type errors are
+`expected a set but found an integer: 1`, failed assertions show the condition as CppNix's
+parser desugars it (`assertion '((__sub x 1) == 2)' failed`) and, for `==`, where the two
+sides differ. `tests/eval-cli.sh` runs 195 command lines through both `nix eval` (CppNix
+2.35) and `nix-truffle eval` and compares their output, exit status and lock files, including
+the evaluation of a real NixOS system flake.
+
 ## What's there and what isn't
 
 - **Supported:** the whole expression language (strings with interpolation, indented strings,
@@ -210,7 +251,11 @@ the lock file, like Nix. `nixConfig` is checked but not applied.
   depending on them, which changes the order in which list options such as
   `environment.systemPackages` are merged.
 - **Approximations:** error messages have a location and a derivation trace but no full
-  Nix-style trace. Evaluation is single-threaded.
+  Nix-style trace. Evaluation is single-threaded, and there is no evaluation cache.
+- **Known divergence:** CppNix keeps attribute sets in the order their names were first
+  interned (well-known names like `drvPath` first, then in parse order), nix-truffle sorts
+  them by name. Only which error comes first differs, when forcing all attributes
+  (`deepSeq`, `==`) hits several of them.
 
 ## Tests and numbers
 
@@ -224,7 +269,10 @@ and nix-truffle and diffs the output (errors are compared as "error"). The cases
 - when `<nixpkgs>` is available, diffs `examples/nixpkgs-lib.nix` (including `evalModules`) and
   the `.drv` paths of `hello` and, with `SLOW=1`, `chromium` and `nixosTests.cosmic`.
 
-Currently all 36 checks pass against Lix 2.94 (with `SLOW=1`).
+Currently all 37 checks pass against Lix 2.94 (with `SLOW=1`).
+
+`NIX=/path/to/cppnix/bin/nix tests/eval-cli.sh` compares `nix-truffle eval` with CppNix's
+`nix eval` (see above; `NIXPKGS=1` adds cases that fetch nixpkgs).
 
 [nix-pbt](https://github.com/yorickvP/nix-pbt) runs property-based differential tests (random
 expressions, builtins on arbitrary arguments, fetchers on generated repositories and
@@ -261,6 +309,6 @@ src/main/java/nixtruffle/
   fs/          byte-exact file system access through libc
   store/       hashes, store paths, NAR, Derivation (ATerm), store registry, daemon client
   util/        JSON (nlohmann-compatible output)
-  launcher/    CLI, REPL, nix-pbt server, flake lock
+  launcher/    CLI (legacy and `eval`), REPL, nix-pbt server, flake lock
 src/main/resources/nixtruffle/corepkgs/   CppNix's derivation.nix, fetchurl.nix, call-flake.nix, ...
 ```

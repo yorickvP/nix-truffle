@@ -88,6 +88,13 @@ public final class Registry {
         }
     }
 
+    /** {@code overrideRegistry}: an entry in the flag registry ({@code --override-flake}, {@code --inputs-from}). */
+    public static void override(Fetcher f, Input from, Input to, Attrs extraAttrs) {
+        for (Registry r : f.registries().get()) {
+            if (r.type == Type.FLAG) r.entries.add(new Entry(from, to, extraAttrs, false));
+        }
+    }
+
     /** {@code lookupInRegistries}: the direct input an indirect one stands for, and extra attributes (dir). */
     public static Object[] lookup(Fetcher f, Input input0, Use use) {
         Attrs extra = new Attrs();

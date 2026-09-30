@@ -78,7 +78,7 @@ public final class Foreign {
     public static Object call(Object fn, Object[] lazyArgs, Node location) {
         InteropLibrary lib = InteropLibrary.getUncached(fn);
         if (!lib.isExecutable(fn)) {
-            throw NixException.error("attempt to call something which is not a function but " + Values.typeName(fn), location);
+            throw NixException.error("attempt to call something which is not a function but " + Values.typeName(fn) + ": " + ValuePrinter.printForError(fn), location);
         }
         Object[] args = new Object[lazyArgs.length];
         for (int i = 0; i < args.length; i++) args[i] = out(Thunk.force(lazyArgs[i]));

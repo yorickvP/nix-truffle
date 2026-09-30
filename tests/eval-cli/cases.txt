@@ -1,0 +1,191 @@
+# nix-truffle eval vs nix eval: one command line per line (shell-quoted); '@fx' runs in the flake.
+# See tests/eval-cli.sh.
+# --expr
+--expr '1 + 1'
+--expr '{ a = throw "boom"; b = [ 1.5 { } { } ]; "if" = 1; "a b" = 2; x-y = 3; }'
+--expr '[ 1.5 1.0e100 0.1 3.0 123456789.0 1.0e-7 (-2.5) ]'
+--expr '"a\nb\t\"c\" \${x} é"'
+--expr 'let f = x: x; in [ f builtins.map (builtins.map (x: x)) map ]'
+--expr '{ f = { a, b ? 1 }: a; g = x: y: x; }'
+--expr 'let a = { x = 1; }; l = [ 1 ]; in [ a a l l [ ] [ ] ]'
+--expr 'let x = { a = x; }; in x'
+--expr '{ d = builtins.derivation { name = "x"; builder = "b"; system = "s"; }; t = { type = "derivation"; }; }'
+--expr '{ a = 1 + "x"; b = abort "q"; c = assert false; 1; }'
+--expr 'throw "top"'
+--expr 'null'
+--expr 'true'
+--expr './plain.txt'
+--expr 'builtins.currentSystem'
+--expr 'builtins.currentTime > 0'
+--impure --expr 'builtins.currentSystem'
+--expr 'builtins.readFile ./plain.txt'
+--impure --expr 'builtins.readFile ./plain.txt'
+--expr '"${./plain.txt}"'
+--expr 'builtins.pathExists ./plain.txt'
+--expr 'builtins.pathExists /etc'
+--impure --expr 'builtins.pathExists ./plain.txt'
+--expr '<nixpkgs>'
+--expr 'builtins.nixPath'
+--expr 'builtins.getEnv "HOME"'
+--expr 'builtins.storePath /nix/store'
+--expr 'import ./expr.nix'
+--expr 'builtins.fetchTree { type = "path"; path = "/tmp"; }'
+--expr 'builtins.toFile "x" "y"'
+--expr 'builtins.readFile (builtins.toFile "x" "content")'
+--expr 'builtins.readDir (builtins.path { path = builtins.toFile "x" "y"; })'
+--expr '{ a.b.c = 1; }' a.b.c
+--expr '{ a.b.c = 1; }' a.b
+--expr '{ a = [ 10 20 ]; }' a.1
+--expr '{ a = [ 10 20 ]; }' a.5
+--expr '{ a = 1; }' b
+--expr '{ "a.b" = 1; }' '"a.b"'
+--expr 'x: x' --apply 'f: f 3'
+--expr '{ a = 1; }' --apply 'builtins.attrNames'
+--json --expr '{ a = [ 1 { } [ ] "x" ]; b = { c = 1.5; }; d = null; e = true; }'
+--json --pretty --expr '{ a = [ 1 { } [ ] "x" ]; b = { c = 1.5; }; }'
+--json --no-pretty --expr '{ a = [ 1 ]; }'
+--json --expr './plain.txt'
+--json --expr 'x: x'
+--raw --expr '"x"'
+--raw --expr '{ outPath = "o"; }'
+--raw --expr '1'
+--raw --json --expr '1'
+--raw --expr './plain.txt'
+--expr '1' --file expr.nix
+# --file
+--file expr.nix
+--file expr.nix twice
+--file expr.nix twice --arg n 21
+--file expr.nix pkgs --argstr pkgs custom
+--file expr.nix list.1.a
+--file expr.nix fn.got
+--file expr.nix s --json
+--file ./expr.nix
+--file expr.nix nope
+-f expr.nix twice
+--file expr.nix --expr '1'
+# flakes
+@fx .#both
+@fx .#legacy
+@fx .#legacy.y
+@fx .#lib.n
+@fx .#lib
+@fx .#lib.f
+@fx .#lib.fl
+@fx .#lib.str
+@fx .#lib.paths
+@fx '.#lib.nested.deep."a.b"'
+@fx .#.both
+@fx .#.packages.x86_64-linux.both
+@fx .#hello
+@fx .#hello.name
+@fx .#hello.drvPath
+@fx .#hello.drvPath --raw
+@fx .#hello --json
+@fx .
+@fx .#nope
+@fx .#fromDep
+@fx .#depSrc
+@fx .#sourceKeys
+@fx .#self\'
+@fx .#list --json
+@fx .#err
+@fx .#err.bad
+@fx .#impure
+@fx .#impure --impure
+@fx .#file
+@fx .#outside
+@fx .#outside --impure
+@fx .#hello^out
+@fx .#hello.name --arg x 1
+@fx '.#lib.n' --apply 'x: x * 10'
+@fx .#fromDep --no-write-lock-file
+@fx .#fromDep --override-input dep path:../fx
+@fx .#fromDep --output-lock-file ../out.lock
+path:fx#both
+./fx#both
+fx#both
+@fx '..'
+@fx ./sub
+@fx /nix/store
+# assertions
+--expr '{ x = assert false; 1; }'
+--expr '{ x = assert 1 == 2; 1; }'
+--expr '{ x = assert 1 == 1.5; 1; }'
+--expr '{ x = assert "a" == "b"; 1; }'
+--expr '{ x = assert "a" == 1; 1; }'
+--expr '{ x = assert [ 1 2 ] == [ 1 3 ]; 1; }'
+--expr '{ x = assert [ 1 2 ] == [ 1 ]; 1; }'
+--expr '{ x = assert { a = 1; } == { a = 2; }; 1; }'
+--expr '{ x = assert { a = 1; } == { b = 1; }; 1; }'
+--expr '{ x = assert { a = 1; } == { a = 1; b = 2; }; 1; }'
+--expr '{ x = assert true == false; 1; }'
+--expr '{ x = assert null == 1; 1; }'
+--expr '{ x = assert 1.5 == 2.5; 1; }'
+--expr '{ x = assert (x: x) == (x: x); 1; }'
+--expr '{ x = assert ./a == ./b; 1; }'
+--expr 'let y = 3; in { x = assert y < 2 && y > 5 || !(y >= 1) -> y <= 0; 1; }'
+--expr 'let y = 3; in { x = assert y - 1 * 2 / 4 == -y; 1; }'
+--expr 'let a = { b.c = 1; }; in { x = assert a.b.c or 2 == a ? b && (a ? b.c); 1; }'
+--expr 'let f = x: x; in { x = assert f (f 1) 2 == builtins.map f [ 1 ]; 1; }'
+--expr '{ x = assert "a${toString 1}b" == ''
+  x ${"y"}
+''; 1; }'
+--expr '{ x = assert { a = 1; b.c = 2; inherit (builtins) map; "d e" = 3; ${"f"} = 4; } == rec { inherit x; }; 1; }'
+--expr '{ x = assert (let a = 1; in a) == (with builtins; if true then 1 else 2); 1; }'
+--expr '{ x = assert ({ a, b ? 2, ... }@args: a) == (y: z: y); 1; }'
+--expr '{ x = assert [ 1 "x" ] ++ [ ] == { } // { }; 1; }'
+--expr '{ x = assert <nixpkgs> == __curPos; 1; }'
+--expr '{ x = assert ./foo/${"bar"} == 1; 1; }'
+--expr '{ x = assert 1.5e3 == 0.1; 1; }'
+--expr '{ x = assert builtins.tryEval (assert false; 1) == { success = true; }; 1; }'
+--expr '{ x = assert { type = "derivation"; outPath = "a"; } == { type = "derivation"; outPath = "b"; }; 1; }'
+--expr '{ x = assert [ (builtins.genList (x: x) 20) ] == [ (builtins.genList (x: x) 21) ]; 1; }'
+--expr '{ x = assert "if" == "then"; 1; }'
+--expr '{ x = assert { "if" = 1; } == { }; 1; }'
+--expr '{ x = assert !false -> false; 1; }'
+# error messages
+--expr '{ a = 1 2; }'
+--expr '{ a = (1).b; }'
+--expr '{ a = { }.b; }'
+--expr '{ a = { c = 1; }.b; }'
+--expr '{ a = 1 + { }; }'
+--expr '{ a = "x" + 1; }'
+--expr '{ a = { } + 1; }'
+--expr '{ a = 1 - "x"; }'
+--expr '{ a = 1 / 0; }'
+--expr '{ a = 1 * "x"; }'
+--expr '{ a = if 1 then 2 else 3; }'
+--expr '{ a = !1; }'
+--expr '{ a = 1 && true; }'
+--expr '{ a = [ 1 ] ++ 1; }'
+--expr '{ a = { } // 1; }'
+--expr '{ a = 1 < "x"; }'
+--expr '{ a = "${{ }}"; }'
+--expr '{ a = "${1}"; }'
+--expr '{ a = builtins.length 1; }'
+--expr '{ a = builtins.head [ ]; }'
+--expr '{ a = builtins.elemAt [ 1 ] 5; }'
+--expr '{ a = builtins.attrNames 1; }'
+--expr '{ a = builtins.getAttr "x" { }; }'
+--expr '{ a = builtins.substring (-1) 1 "x"; }'
+--expr '{ a = builtins.toString { }; }'
+--expr '{ a = builtins.map 1 [ 1 ]; }'
+--expr '{ a = (x: x) { }; b = ({ x }: x) { }; c = ({ x }: x) { x = 1; y = 2; }; }'
+--expr '{ a = let x = x; in x; }'
+--expr '{ a = builtins.seq (throw "t") 1; }'
+--expr '{ a = 9223372036854775807 + 1; }'
+--expr '{ a = builtins.foldl'"'"' (x: y: x + y) 0 [ "a" ]; }'
+--expr '{ a = builtins.concatStringsSep 1 [ ]; }'
+--expr '{ a = builtins.hashString "md4" "x"; }'
+--expr '{ a = builtins.split "(" "x"; }'
+--expr '{ a = builtins.toJSON (x: x); }'
+--expr '{ a = import 1; }'
+--expr '{ a = builtins.getEnv 1; }'
+--expr '{ a = builtins.listToAttrs [ 1 ]; }'
+--expr '{ a = builtins.listToAttrs [ { } ]; }'
+--expr '{ a = builtins.derivation { }; }'
+--expr '{ a = builtins.derivation { name = "x"; }; }'
+--expr '{ a = builtins.genList 1 1; }'
+--expr '{ a = builtins.filter (x: 1) [ 1 ]; }'
+--expr '{ a = builtins.compareVersions 1 "x"; }'
