@@ -48,6 +48,8 @@ bin/nix-truffle eval .#nixosConfigurations.host.config.system.build.toplevel.drv
 bin/nix-truffle eval --raw nixpkgs#hello.name --json --file default.nix --expr ... --apply ...
 bin/nix-truffle flake lock [FLAKEREF]                # like nix flake lock (default: .)
 bin/nix-truffle --pbt-server                         # evaluator for nix-pbt (see below)
+NIX_TRUFFLE_DAEMON=1 bin/nix-truffle ...             # run in a warm background daemon (see below)
+bin/build-native       # native executable target/nix-truffle (see below)
 tests/run.sh           # differential tests against nix-instantiate (SLOW=1 adds chromium)
 bench/run.sh           # timing against nix-instantiate
 ```
@@ -261,6 +263,59 @@ Instantiating a module costs more with GraalWasm (tens of microseconds for a typ
 module, which allocates a megabyte of memory) than with wasmtime's pooling allocator, which
 shows in code that calls a Wasm function very often.
 
+## Speed: the daemon and native images
+
+Most of a one-off run is warm-up. HotSpot is compiling the interpreter itself, then Truffle
+is compiling nixpkgs, and both are thrown away when the process exits. The language uses
+`ContextPolicy.SHARED`, so parsed and compiled code can be shared by all contexts of an engine:
+code depends on a context only through its `GlobalScope` (the names in its base environment),
+and `NixLanguage` keeps parsed files by path and contents. Two things build on that.
+
+**The daemon.** With `NIX_TRUFFLE_DAEMON=1`, `bin/nix-truffle` starts a small client JVM
+(about 50 ms). The client hands the command line, environment and current directory to a
+background daemon over a Unix socket in `$XDG_RUNTIME_DIR/nix-truffle` (or
+`~/.cache/nix-truffle/daemon`), starting the daemon first if needed.
+- Every command gets a fresh context, so results don't depend on what ran before. But files
+  are parsed once (and again when their contents change), and compiled code stays warm.
+- A daemon exits when its build changes (the next command then starts a new one), after
+  three idle hours (`NIX_TRUFFLE_DAEMON_IDLE`, in seconds), or on `nix-truffle daemon stop`.
+  `nix-truffle daemon status` shows it.
+- ^C cancels the command in the daemon too. The REPL and `--pbt-server` run in the client's
+  own JVM.
+
+**Native images.** `bin/build-native` builds `target/nix-truffle` with native-image. The
+configuration is in `src/main/resources/META-INF/native-image`, with metadata recorded by the
+tracing agent while running the tests. A native image starts in milliseconds.
+- GraalVM CE's native images only have the serial GC, which copies the live set of a big
+  evaluation single-threaded, again and again. So they suit small evaluations only.
+- Oracle GraalVM adds G1 (`--gc=G1`) and profile-guided optimization: build with
+  `--pgo-instrument`, run a few evaluations with `-XX:ProfilesDumpFile=F.iprof`, then build
+  with `--pgo=F.iprof,...`.
+- Oracle GraalVM also has auxiliary engine caching, which saves parsed and compiled code to a
+  file. It needs the serial GC:
+  - build with `-H:+AuxiliaryEngineCache`;
+  - store with `-Dpolyglot.engine.AllowExperimentalOptions=true -Dpolyglot.engine.CacheStore=F`;
+  - load with the same flags with `CacheLoad=F`, plus `-XX:AuxiliaryImageBytes=N`, where N is at
+    least the size of F.
+- Oracle GraalVM 25.0 needs the Truffle 25.0 artifacts (`mvn -Dgraalvm.version=25.0.4`, and
+  `org.graalvm.truffle:truffle-enterprise` instead of `truffle-runtime`). The pom's 25.3 ones
+  need GraalVM CE 25.3.
+
+On this machine (32 cores):
+
+| | `1+1` | nixpkgs `hello.drvPath` | minimal NixOS `toplevel.drvPath` | a desktop NixOS config |
+|---|---|---|---|---|
+| Lix 2.94 | 0.02 s | 0.22 s | 2.5 s | 12.6 s |
+| JVM, one run (GraalVM CE 25.3) | 0.30 s | 0.98 s | 4.4 s | 11.9 s |
+| daemon, warm | 0.065 s | 0.26 s | 1.6–2.0 s | 6.9 s, also after an edit |
+| native, GraalVM CE (serial GC) | 0.005 s | 0.70 s | 15.5 s | |
+| native, Oracle GraalVM, G1 + PGO | 0.012 s | 0.48 s | 4.55 s | 14 s |
+| native, Oracle GraalVM, serial GC + engine cache of `hello` | | 0.44 s | | |
+
+On the JVM, Oracle GraalVM's compiler makes no difference to one run (1.06 s and 4.5 s): what
+it waits for is the interpreter warming up. Turning off Truffle compilation altogether doesn't
+make the minimal NixOS evaluation any slower either (4.1 s).
+
 ## What's there and what isn't
 
 - **Supported:** the whole expression language (strings with interpolation, indented strings,
@@ -342,7 +397,7 @@ src/main/java/nixtruffle/
   fetch/       libfetchers and libflake: inputs, schemes, URLs, registries, caches, lock files
   fs/          byte-exact file system access through libc
   store/       hashes, store paths, NAR, Derivation (ATerm), store registry, daemon client
-  util/        JSON (nlohmann-compatible output)
-  launcher/    CLI (legacy and `eval`), REPL, nix-pbt server, flake lock
+  util/        JSON (nlohmann-compatible output), Proc (a command's environment and directory)
+  launcher/    CLI (legacy and `eval`), REPL, nix-pbt server, flake lock, daemon and its client
 src/main/resources/nixtruffle/corepkgs/   CppNix's derivation.nix, fetchurl.nix, call-flake.nix, ...
 ```
