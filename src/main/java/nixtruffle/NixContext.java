@@ -19,6 +19,8 @@ public final class NixContext {
     public final Map<String, Object> importCache = new HashMap<>();
     /** Lookup path entries ({@code nixpkgs=flake:nixpkgs}, URLs) resolved so far; null if unusable. */
     public final Map<String, String> lookupPathCache = new HashMap<>();
+    /** {@code builtins.wasm}: modules compiled so far, by path. */
+    public final Map<String, Object> wasmModules = new HashMap<>();
     public final PrintStream err;
     public final nixtruffle.store.Store store = new nixtruffle.store.Store();
     private Object derivationLambda;

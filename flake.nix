@@ -10,7 +10,7 @@
     in {
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
-          packages = [ pkgs.graalvmPackages.graalvm-ce pkgs.maven ];
+          packages = [ pkgs.graalvmPackages.graalvm-ce pkgs.maven pkgs.wabt ];
           JAVA_HOME = pkgs.graalvmPackages.graalvm-ce;
         };
       });

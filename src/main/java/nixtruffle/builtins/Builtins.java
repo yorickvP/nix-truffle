@@ -574,6 +574,7 @@ public final class Builtins {
         FileBuiltins.install();
         StoreBuiltins.install();
         FetchBuiltins.install();
+        WasmBuiltin.install();
         FlakeBuiltins.install();
     }
 

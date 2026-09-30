@@ -54,6 +54,13 @@
       <version>3.30.17</version>
     </dependency>
     <!-- Guest language for the polyglot demos (builtins.polyglotEval "js" ...). -->
+    <!-- builtins.wasm runs WebAssembly modules with GraalWasm. -->
+    <dependency>
+      <groupId>org.graalvm.polyglot</groupId>
+      <artifactId>wasm-community</artifactId>
+      <version>${graalvm.version}</version>
+      <type>pom</type>
+    </dependency>
     <dependency>
       <groupId>org.graalvm.polyglot</groupId>
       <artifactId>js-community</artifactId>

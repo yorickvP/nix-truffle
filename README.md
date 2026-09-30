@@ -5,8 +5,8 @@ Truffle/GraalVM. It has full lazy semantics, a JIT (Graal compiles thunks and
 lambdas and inlines them into each other), derivations and instantiation
 through the Nix daemon, fetchers (`fetchTree`, `fetchGit`, `fetchTarball`,
 `fetchurl`, ...), flakes (`builtins.getFlake`, lock files), a `nix eval`-compatible
-command line that takes flake references, a REPL, and two-way polyglot interop with
-other Truffle languages (JS is bundled).
+command line that takes flake references, Determinate Nix's `builtins.wasm` on GraalWasm,
+a REPL, and two-way polyglot interop with other Truffle languages (JS is bundled).
 
 ```
 $ bin/nix-truffle --instantiate '<nixpkgs>' -A chromium
@@ -229,6 +229,38 @@ sides differ. `tests/eval-cli.sh` runs 195 command lines through both `nix eval`
 2.35) and `nix-truffle eval` and compares their output, exit status and lock files, including
 the evaluation of a real NixOS system flake.
 
+## `builtins.wasm`
+
+Determinate Nix's `builtins.wasm` (behind the `wasm-builtin` experimental feature) runs
+WebAssembly modules; here they run on [GraalWasm](https://www.graalvm.org/webassembly/)
+(`builtins/WasmBuiltin.java`, a port of Determinate Nix's `libexpr/primops/wasm.cc`):
+
+```nix
+builtins.wasm { path = ./fib.wasm; function = "fib"; } 40          # a plain module
+builtins.wasm { path = ./plugin.wasm; } { some = "argument"; }     # a WASI module
+builtins.wasm { wat = builtins.readFile ./fib.wat; function = "fib"; } 40
+```
+
+Nix values are `u32` IDs that the module manipulates through the host functions of the `env`
+module (`get_type`, `make_int`, `copy_string`, `make_attrset`, `call_function`, `make_app`,
+`read_file`, ...), with the same bounds checks. Every call gets a fresh instance of the
+compiled module. A module that imports from `wasi_snapshot_preview1` runs its `_start` with
+the argument's ID as `argv[1]` and returns with `return_to_nix`; nix-truffle implements the WASI
+functions itself, like wasmtime's default configuration: no environment, empty stdin, no
+preopened directories, and stdout/stderr become warnings, one per line. `wat` sources are
+compiled with `wat2wasm` from wabt (in the dev shell), since GraalWasm reads only the binary
+format.
+
+All the examples of [nix-wasm-rust](https://github.com/DeterminateSystems/nix-wasm-rust) pass
+their tests (YAML, INI, grep, Mandelbrot, and QuickJS running JavaScript from Nix through
+WASI), and so do Determinate Nix's own `wasm.sh` cases (`tests/wasm.sh`). Compared with
+Determinate Nix 3.22 on edge cases, two things differ on purpose: `make_attrset` with a repeated
+name keeps the last one (Determinate Nix makes a set with the name twice), and `copy_attrset`
+lists attributes by name (Determinate Nix in interning order, with a FIXME to sort them).
+Instantiating a module costs more with GraalWasm (tens of microseconds for a typical Rust
+module, which allocates a megabyte of memory) than with wasmtime's pooling allocator, which
+shows in code that calls a Wasm function very often.
+
 ## What's there and what isn't
 
 - **Supported:** the whole expression language (strings with interpolation, indented strings,
@@ -272,7 +304,9 @@ and nix-truffle and diffs the output (errors are compared as "error"). The cases
 Currently all 37 checks pass against Lix 2.94 (with `SLOW=1`).
 
 `NIX=/path/to/cppnix/bin/nix tests/eval-cli.sh` compares `nix-truffle eval` with CppNix's
-`nix eval` (see above; `NIXPKGS=1` adds cases that fetch nixpkgs).
+`nix eval` (see above; `NIXPKGS=1` adds cases that fetch nixpkgs). `tests/wasm.sh` tests
+`builtins.wasm`, and with `PLUGINS`, `WASI` and `NIX_WASM_RUST` set runs nix-wasm-rust's test
+suite too.
 
 [nix-pbt](https://github.com/yorickvP/nix-pbt) runs property-based differential tests (random
 expressions, builtins on arbitrary arguments, fetchers on generated repositories and
