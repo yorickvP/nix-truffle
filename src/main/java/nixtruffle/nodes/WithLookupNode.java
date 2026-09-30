@@ -38,6 +38,7 @@ public final class WithLookupNode extends NixNode {
             if (value == SelectStepNode.NOT_ATTRS) throw NixException.typeError(env, "a set", this);
             if (value != SelectStepNode.MISSING) return value;
         }
+        com.oracle.truffle.api.CompilerDirectives.transferToInterpreter();
         throw NixException.error("undefined variable '" + name + "'", this);
     }
 }

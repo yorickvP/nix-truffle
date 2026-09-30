@@ -29,6 +29,7 @@ public final class SelectNode extends NixNode {
             if (next == SelectStepNode.MISSING || next == SelectStepNode.NOT_ATTRS) {
                 if (fallback != null) return fallback.execute(frame);
                 if (next == SelectStepNode.NOT_ATTRS) throw NixException.typeError(current, "a set", this);
+                com.oracle.truffle.api.CompilerDirectives.transferToInterpreter();
                 throw NixException.error("attribute '" + key + "' missing", this);
             }
             current = next;

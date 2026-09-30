@@ -85,12 +85,15 @@ public final class Values {
     public static String stringNoCtx(Object v) {
         Object f = Thunk.force(v);
         if (f instanceof String s) return s;
-        if (f instanceof NixString s) {
-            String c = s.context[0];
-            String path = c.startsWith("=") ? c.substring(1) : c.startsWith("!") ? c.substring(c.indexOf('!', 1) + 1) : c;
-            throw NixException.error("the string '" + s.value + "' is not allowed to refer to a store path (such as '" + path + "')", null);
-        }
+        if (f instanceof NixString s) throw hasContext(s);
         throw NixException.typeError(f, "a string", null);
+    }
+
+    @TruffleBoundary
+    private static NixException hasContext(NixString s) {
+        String c = s.context[0];
+        String path = c.startsWith("=") ? c.substring(1) : c.startsWith("!") ? c.substring(c.indexOf('!', 1) + 1) : c;
+        return NixException.error("the string '" + s.value + "' is not allowed to refer to a store path (such as '" + path + "')", null);
     }
 
     /** {@code forceFloat}: an integer or a float, as a double. */

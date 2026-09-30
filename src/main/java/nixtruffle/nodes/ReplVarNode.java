@@ -19,7 +19,10 @@ public final class ReplVarNode extends NixNode {
     public Object execute(VirtualFrame frame) {
         NixAttrs scope = (NixAttrs) frameAt(frame, depth).getArguments()[0];
         Object value = step.execute(scope, name);
-        if (value == SelectStepNode.MISSING) throw NixException.error("undefined variable '" + name + "'", this);
+        if (value == SelectStepNode.MISSING) {
+            com.oracle.truffle.api.CompilerDirectives.transferToInterpreter();
+            throw NixException.error("undefined variable '" + name + "'", this);
+        }
         return value;
     }
 }

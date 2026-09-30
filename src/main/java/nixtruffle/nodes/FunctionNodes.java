@@ -107,6 +107,7 @@ public final class FunctionNodes {
                 } else if (defaultIndex[i] >= 0) {
                     frame.setObject(slots[i], defaults[defaultIndex[i]].execute(frame));
                 } else {
+                    CompilerDirectives.transferToInterpreter();
                     throw NixException.error("function '" + functionName + "' called without required argument '" + names[i] + "'", this);
                 }
             }

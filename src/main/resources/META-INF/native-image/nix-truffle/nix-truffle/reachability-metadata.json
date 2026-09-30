@@ -1,0 +1,462 @@
+{
+  "reflection": [
+    {
+      "type": "java.lang.Boolean",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "getBoolean",
+          "parameterTypes": [
+            "java.lang.String"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "java.lang.Class",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "getClassLoader",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "java.lang.ClassLoader",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "classLoaderValueMap"
+        }
+      ],
+      "methods": [
+        {
+          "name": "loadClass",
+          "parameterTypes": [
+            "java.lang.String"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "java.lang.ProcessBuilder$RedirectPipeImpl",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "fd"
+        }
+      ],
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "java.util.function.Supplier",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "get",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "jdk.internal.loader.ClassLoaders$AppClassLoader"
+    },
+    {
+      "type": "jdk.internal.misc.Unsafe"
+    },
+    {
+      "type": "nixtruffle.NixLanguageProvider"
+    },
+    {
+      "type": "org.graalvm.home.impl.DefaultHomeFinder"
+    },
+    {
+      "type": "org.graalvm.polyglot.io.IOHelper",
+      "fields": [
+        {
+          "name": "ACCESS"
+        }
+      ]
+    },
+    {
+      "type": "org.graalvm.polyglot.management.Management",
+      "fields": [
+        {
+          "name": "ACCESS"
+        }
+      ]
+    },
+    {
+      "type": "org.graalvm.wasm.RuntimeState",
+      "fields": [
+        {
+          "name": "linkState"
+        }
+      ]
+    },
+    {
+      "type": "org.graalvm.wasm.WasmLanguageProvider"
+    },
+    {
+      "type": "org.graalvm.wasm.WasmModule",
+      "fields": [
+        {
+          "name": "linkActions"
+        }
+      ]
+    },
+    {
+      "type": "org.graalvm.wasm.memory.WasmMemoryLibrary"
+    },
+    {
+      "type": "org.jline.nativ.CLibrary",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "TCSADRAIN"
+        },
+        {
+          "name": "TCSAFLUSH"
+        },
+        {
+          "name": "TCSANOW"
+        },
+        {
+          "name": "TIOCGWINSZ"
+        },
+        {
+          "name": "TIOCSWINSZ"
+        }
+      ]
+    },
+    {
+      "type": "org.jline.terminal.impl.exec.ExecTerminalProvider",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.jline.terminal.impl.ffm.FfmTerminalProvider",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "org.jline.terminal.impl.jni.JniTerminalProvider",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.security.provider.NativePRNG$NonBlocking",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "java.security.SecureRandomParameters"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "sun.security.provider.SHA",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.security.provider.SHA2$SHA256",
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "sun.text.resources.cldr.FormatData"
+    }
+  ],
+  "resources": [
+    {
+      "glob": "META-INF/graalvm/org.graalvm.polyglot/version"
+    },
+    {
+      "glob": "META-INF/graalvm/org.graalvm.truffle/version"
+    },
+    {
+      "glob": "META-INF/jline/providers/exec"
+    },
+    {
+      "glob": "META-INF/jline/providers/ffm"
+    },
+    {
+      "glob": "META-INF/jline/providers/jansi"
+    },
+    {
+      "glob": "META-INF/jline/providers/jna"
+    },
+    {
+      "glob": "META-INF/jline/providers/jni"
+    },
+    {
+      "glob": "META-INF/maven/org.jline/jline-native/pom.properties"
+    },
+    {
+      "glob": "META-INF/resources/engine/libtruffleattach/linux/amd64/sha256"
+    },
+    {
+      "glob": "META-INF/services/com.oracle.truffle.api.TruffleRuntimeAccess"
+    },
+    {
+      "glob": "META-INF/services/com.oracle.truffle.api.instrumentation.provider.TruffleInstrumentProvider"
+    },
+    {
+      "glob": "META-INF/services/com.oracle.truffle.api.library.provider.DefaultExportProvider"
+    },
+    {
+      "glob": "META-INF/services/com.oracle.truffle.api.provider.InternalResourceProvider"
+    },
+    {
+      "glob": "META-INF/services/com.oracle.truffle.api.provider.TruffleLanguageProvider"
+    },
+    {
+      "glob": "META-INF/services/com.oracle.truffle.js.runtime.Evaluator"
+    },
+    {
+      "glob": "META-INF/services/com.oracle.truffle.runtime.FloodControlHandler"
+    },
+    {
+      "glob": "META-INF/services/com.oracle.truffle.runtime.TruffleTypes"
+    },
+    {
+      "glob": "META-INF/services/com.oracle.truffle.runtime.jfr.EventFactory$Provider"
+    },
+    {
+      "glob": "META-INF/services/java.nio.channels.spi.SelectorProvider"
+    },
+    {
+      "glob": "META-INF/services/org.graalvm.home.HomeFinder"
+    },
+    {
+      "glob": "META-INF/services/org.graalvm.polyglot.impl.AbstractPolyglotImpl"
+    },
+    {
+      "module": "jdk.jfr",
+      "glob": "jdk/jfr/internal/types/metadata.bin"
+    },
+    {
+      "glob": "nixtruffle/corepkgs/*"
+    },
+    {
+      "glob": "org/jline/nativ/Linux/x86_64/libjlinenative.so"
+    },
+    {
+      "glob": "org/jline/utils/capabilities.txt"
+    },
+    {
+      "glob": "org/jline/utils/dumb.caps"
+    }
+  ],
+  "foreign": {
+    "downcalls": [
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jint"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jint",
+          "jlong",
+          "void*"
+        ],
+        "options": {
+          "firstVariadicArg": 2
+        }
+      },
+      {
+        "returnType": "jlong",
+        "parameterTypes": [
+          "void*",
+          "void*",
+          "jlong"
+        ],
+        "options": {
+          "captureCallState": true
+        }
+      },
+      {
+        "returnType": "void*",
+        "parameterTypes": [
+          "void*"
+        ],
+        "options": {
+          "captureCallState": true
+        }
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "void*",
+          "void*"
+        ],
+        "options": {
+          "captureCallState": true
+        }
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "void*",
+          "jint",
+          "jint"
+        ],
+        "options": {
+          "captureCallState": true,
+          "firstVariadicArg": 2
+        }
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "void*"
+        ],
+        "options": {
+          "captureCallState": true
+        }
+      },
+      {
+        "returnType": "void*",
+        "parameterTypes": []
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "void*"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jint",
+          "void*",
+          "jint",
+          "jint",
+          "void*"
+        ],
+        "options": {
+          "captureCallState": true
+        }
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jint",
+          "void*"
+        ]
+      },
+      {
+        "returnType": "void*",
+        "parameterTypes": [
+          "jint"
+        ]
+      },
+      {
+        "returnType": "void",
+        "parameterTypes": [
+          "void*"
+        ]
+      },
+      {
+        "returnType": "void*",
+        "parameterTypes": [
+          "void*",
+          "void*"
+        ],
+        "options": {
+          "captureCallState": true
+        }
+      },
+      {
+        "returnType": "jlong",
+        "parameterTypes": [
+          "jint",
+          "void*",
+          "jlong"
+        ],
+        "options": {
+          "captureCallState": true
+        }
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "void*",
+          "jint"
+        ],
+        "options": {
+          "captureCallState": true
+        }
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jint",
+          "void*",
+          "void*",
+          "jint"
+        ],
+        "options": {
+          "captureCallState": true
+        }
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jint",
+          "jint",
+          "void*"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "jint",
+          "void*",
+          "jlong"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "void*",
+          "void*",
+          "void*",
+          "void*",
+          "void*"
+        ]
+      }
+    ]
+  }
+}
