@@ -58,16 +58,30 @@ final class FetchBuiltins {
     record Params(boolean emptyRevFallback, boolean allowNameArgument, boolean isFetchGit, boolean isFinal) {}
 
     static void install() {
-        Builtins.def("fetchTree", 1, a -> fetchTree(a[0], new Params(false, false, false, false)));
-        Builtins.def("fetchGit", 1, a -> fetchTree(a[0], new Params(true, true, true, false)));
-        Builtins.def("fetchTarball", 1, a -> fetch(a[0], "fetchTarball", true, "source"));
-        Builtins.def("fetchurl", 1, a -> fetch(a[0], "fetchurl", false, ""));
-        Builtins.def("fetchMercurial", 1, a -> fetchMercurial(a[0]));
+        Builtins.def("fetchTree", 1, a -> locked(a[0], () -> fetchTree(a[0], new Params(false, false, false, false))));
+        Builtins.def("fetchGit", 1, a -> locked(a[0], () -> fetchTree(a[0], new Params(true, true, true, false))));
+        Builtins.def("fetchTarball", 1, a -> locked(a[0], () -> fetch(a[0], "fetchTarball", true, "source")));
+        Builtins.def("fetchurl", 1, a -> locked(a[0], () -> fetch(a[0], "fetchurl", false, "")));
+        Builtins.def("fetchMercurial", 1, a -> locked(a[0], () -> fetchMercurial(a[0])));
     }
 
     /** The fetchTree used by call-flake.nix: the input is locked already. */
     static Object fetchFinalTree(Object arg) {
-        return fetchTree(arg, new Params(false, false, false, true));
+        return locked(arg, () -> fetchTree(arg, new Params(false, false, false, true)));
+    }
+
+    /**
+     * A fetch, with the fetchers to itself (see {@link nixtruffle.runtime.Parallel#fetching}). Its
+     * argument is evaluated first (the fetch evaluates it no further than this).
+     */
+    private static Object locked(Object arg, java.util.function.Supplier<Object> fetch) {
+        Object v = force(arg);
+        if (v instanceof NixAttrs args) {
+            for (int i = 0; i < args.size(); i++) {
+                if (args.forceAt(i) instanceof NixAttrs a && a.getRaw("outPath") != null) a.get("outPath");
+            }
+        }
+        return nixtruffle.runtime.Parallel.fetching(false, fetch);
     }
 
     // ------------------------------------------------------------ fetchTree

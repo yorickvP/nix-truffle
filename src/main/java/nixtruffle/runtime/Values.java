@@ -137,7 +137,7 @@ public final class Values {
      */
     @TruffleBoundary
     public static String coerce(Object v, boolean coerceMore, boolean copyToStore, java.util.Set<String> context, Node location) {
-        nixtruffle.NixContext ctx = CallDepth.enter(location);
+        EvalThread ctx = CallDepth.enter(location);
         try {
             return coerceForced(Thunk.force(v), coerceMore, copyToStore, context, location);
         } finally {
@@ -192,7 +192,7 @@ public final class Values {
      */
     @TruffleBoundary
     public static boolean equal(Object a, Object b) {
-        nixtruffle.NixContext ctx = CallDepth.enter(null);
+        EvalThread ctx = CallDepth.enter(null);
         try {
             Object x = Thunk.force(a);
             Object y = Thunk.force(b);
@@ -208,7 +208,7 @@ public final class Values {
      */
     @TruffleBoundary
     public static boolean equalTop(Object a, Object b) {
-        nixtruffle.NixContext ctx = CallDepth.enter(null);
+        EvalThread ctx = CallDepth.enter(null);
         try {
             return equalValues(Thunk.force(a), Thunk.force(b));
         } finally {

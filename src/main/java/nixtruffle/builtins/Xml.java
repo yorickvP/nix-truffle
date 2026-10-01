@@ -81,7 +81,7 @@ final class Xml {
 
     /** Every value is a level of {@code max-call-depth}, forced inside it (like CppNix). */
     private void value(Object raw) {
-        nixtruffle.NixContext ctx = nixtruffle.runtime.CallDepth.enter(null);
+        nixtruffle.runtime.EvalThread ctx = nixtruffle.runtime.CallDepth.enter(null);
         try {
             valueForced(Thunk.force(raw));
         } finally {

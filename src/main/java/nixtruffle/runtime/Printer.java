@@ -34,7 +34,7 @@ public final class Printer {
     }
 
     private static void deepForce(Object value, IdentityHashMap<Object, Boolean> seen) {
-        nixtruffle.NixContext ctx = CallDepth.enter(null);
+        EvalThread ctx = CallDepth.enter(null);
         try {
             Object v = Thunk.force(value);
             if (v instanceof NixList l) {

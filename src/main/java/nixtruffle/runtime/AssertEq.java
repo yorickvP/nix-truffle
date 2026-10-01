@@ -19,7 +19,7 @@ public final class AssertEq {
 
     @TruffleBoundary
     public static void check(Object a, Object b) {
-        nixtruffle.NixContext ctx = CallDepth.enter(null);
+        EvalThread ctx = CallDepth.enter(null);
         try {
             checkForced(a, b);
         } finally {

@@ -74,13 +74,14 @@ final class CliEval {
             writeTo(v, writeTo, context);
             output = "";
         } else {
+            // Printing forces the value: other cores evaluate its parts (see Parallel).
             output = switch (str(cfg, "output")) {
                 case "raw" -> Values.coerce(v, false, true, context, null);
                 case "json" -> {
-                    String json = Json.writeCompactAsNlohmann(nixtruffle.builtins.Json.toJSON(v, context, false), Boolean.TRUE.equals(cfg.get("pretty")));
+                    String json = Json.writeCompactAsNlohmann(nixtruffle.builtins.Json.toJSON(v, context, false, true), Boolean.TRUE.equals(cfg.get("pretty")));
                     yield json + "\n";
                 }
-                default -> ValuePrinter.print(v, context) + "\n";
+                default -> ValuePrinter.printResult(v, context) + "\n";
             };
         }
         // Derivations and files the output refers to exist afterwards, as with CppNix.

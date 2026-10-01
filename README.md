@@ -59,8 +59,9 @@ Settings come from `nix.conf` (`$NIX_CONF_DIR`, `$XDG_CONFIG_DIRS`, `$XDG_CONFIG
 as in Nix. The ones nix-truffle uses: `experimental-features` (`flakes` enables `getFlake`,
 `fetchTree` on URLs and the other flake builtins), `pure-eval`, `nix-path`, `tarball-ttl`,
 `flake-registry`, `use-registries`, `access-tokens`, `allow-dirty`, `warn-dirty`,
-`max-call-depth`, and its own `polyglot` (default `true`; `--option polyglot false` removes the
-polyglot builtins and foreign `import`, so that `builtins` looks like CppNix's).
+`max-call-depth`, `eval-cores` (see below), and its own `polyglot` (default `true`; `--option
+polyglot false` removes the polyglot builtins and foreign `import`, so that `builtins` looks like
+CppNix's).
 
 The REPL follows `nix repl`: `x = expr` bindings, `:l <nixpkgs>`, `:a`, `:p`, `:t`,
 tab completion of attribute paths, multi-line input, Ctrl-C to interrupt, and errors
@@ -326,6 +327,33 @@ On this machine (32 cores):
 On the JVM, Oracle GraalVM's compiler makes no difference to one run (1.06 s and 4.5 s): what
 it waits for is the interpreter warming up. Turning off Truffle compilation altogether doesn't
 make the minimal NixOS evaluation any slower either (4.1 s).
+
+### Parallel evaluation
+
+With `eval-cores` (as in Determinate Nix: 1, the default, evaluates on one thread; 0 uses all
+cores), `nix-truffle eval` evaluates the parts of its result on other threads while it prints
+them (`runtime/Parallel.java`): the main thread hands the elements of each list and attribute set
+it is about to print to workers, and then goes through them in order, finding them evaluated or
+waiting for the worker evaluating one.
+
+- A thunk is claimed with a compare-and-swap, and holds the thread evaluating it. A thread that
+  finds its own thunk running has an infinite recursion, as before; one that finds another
+  thread's waits for it. Threads that each wait for a thunk the next one is evaluating are an
+  infinite recursion too (one thread would have found its own thunk), and report it as one.
+- Workers have no side effects the main thread wouldn't have in order: a worker that reaches
+  `getFlake`, Wasm or another language gives up its task (its thunks become pending again, and
+  the main thread evaluates them), and so does one that hits an error, which the main thread then
+  hits too, as a sequential evaluation would. Fetching is serialized, with its arguments evaluated
+  first. Traces and warnings from workers come out as they happen.
+- Workers start at the call depth the main thread would be at, so `max-call-depth` fails the
+  same recursions.
+- Until the first worker starts, compiled code assumes one thread (a Truffle assumption):
+  sequential evaluation costs the same as before.
+
+Evaluating all seven NixOS configurations of a flake in one command (`nix-truffle eval --json
+.#nixosConfigurations --apply 'builtins.mapAttrs (n: c: c.config.system.build.toplevel.drvPath)'`)
+takes 14.5 s with `--option eval-cores 8` instead of 28.3 s (Lix: 35.6 s). One configuration
+doesn't get faster yet: its evaluation is one value.
 
 ## What's there and what isn't
 

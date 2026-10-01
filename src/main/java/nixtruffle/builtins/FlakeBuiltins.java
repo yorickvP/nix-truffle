@@ -60,7 +60,7 @@ public final class FlakeBuiltins {
     }
 
     static void install() {
-        Builtins.defFeature("getFlake", 1, "flakes", a -> getFlake(a[0]));
+        Builtins.defFeature("getFlake", 1, "flakes", a -> nixtruffle.runtime.Parallel.fetching(true, () -> getFlake(a[0])));
         Builtins.defFeature("parseFlakeRef", 1, "flakes", a -> parseFlakeRef(a[0]));
         Builtins.defFeature("flakeRefToString", 1, "flakes", a -> flakeRefToString(a[0]));
     }

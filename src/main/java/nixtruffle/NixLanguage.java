@@ -112,6 +112,14 @@ public final class NixLanguage extends TruffleLanguage<NixContext> {
         return REFERENCE.get(node);
     }
 
+    private final com.oracle.truffle.api.ContextThreadLocal<nixtruffle.runtime.EvalThread> evalThreads =
+            locals.createContextThreadLocal((ctx, thread) -> new nixtruffle.runtime.EvalThread(ctx.maxCallDepth));
+
+    /** The current thread's state in the current context. */
+    public nixtruffle.runtime.EvalThread evalThread() {
+        return evalThreads.get();
+    }
+
     @Override
     protected NixContext createContext(Env env) {
         Settings settings = Settings.load();
@@ -207,7 +215,12 @@ public final class NixLanguage extends TruffleLanguage<NixContext> {
 
     @Override
     protected boolean isThreadAccessAllowed(Thread thread, boolean singleThreaded) {
-        // Thunks are updated in place without synchronization.
-        return singleThreaded;
+        // Thunks are claimed and published safely once there are workers (see Thunk, Parallel).
+        return true;
+    }
+
+    @Override
+    protected void finalizeContext(NixContext context) {
+        if (context.parallel != null) context.parallel.stop();
     }
 }

@@ -17,7 +17,7 @@ public final class CallLevelNode extends NixNode {
 
     @Override
     public Object execute(VirtualFrame frame) {
-        NixContext ctx = CallDepth.enter(this);
+        nixtruffle.runtime.EvalThread ctx = CallDepth.enter(this);
         try {
             return body.execute(frame);
         } finally {

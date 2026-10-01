@@ -120,7 +120,7 @@ public final class Main {
 
         private static final Set<String> BOOLEAN_SETTINGS = Set.of("pure-eval", "allow-dirty", "warn-dirty", "use-registries", "trace-verbose",
                 "polyglot", "allow-dirty-locks", "restrict-eval");
-        private static final Set<String> SETTINGS = Set.of("flake-registry", "tarball-ttl", "access-tokens", "nix-path", "system", "max-call-depth",
+        private static final Set<String> SETTINGS = Set.of("flake-registry", "tarball-ttl", "access-tokens", "nix-path", "system", "max-call-depth", "eval-cores",
                 "commit-lock-file-summary", "experimental-features");
     }
 

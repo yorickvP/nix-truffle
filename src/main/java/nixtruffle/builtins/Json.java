@@ -31,9 +31,14 @@ final class Json {
      * evaluated (evaluation errors come first).
      */
     static String toJSON(Object value, java.util.Set<String> context, boolean copyToStore) {
+        return toJSON(value, context, copyToStore, false);
+    }
+
+    /** With {@code ahead}, workers evaluate the parts that are about to be written (see {@link nixtruffle.runtime.Parallel}). */
+    static String toJSON(Object value, java.util.Set<String> context, boolean copyToStore, boolean ahead) {
         StringBuilder sb = new StringBuilder();
         String[] invalid = {null};
-        write(value, sb, context, copyToStore, invalid);
+        write(value, sb, context, copyToStore, invalid, ahead);
         if (invalid[0] != null) throw NixException.error("JSON serialization error: [json.exception.type_error.316] " + invalid[0], null);
         return sb.toString();
     }
@@ -52,16 +57,16 @@ final class Json {
     }
 
     /** Every value is a level of {@code max-call-depth}, forced inside it (like CppNix). */
-    private static void write(Object value, StringBuilder sb, java.util.Set<String> context, boolean copyToStore, String[] invalid) {
-        nixtruffle.NixContext ctx = nixtruffle.runtime.CallDepth.enter(null);
+    private static void write(Object value, StringBuilder sb, java.util.Set<String> context, boolean copyToStore, String[] invalid, boolean ahead) {
+        nixtruffle.runtime.EvalThread ctx = nixtruffle.runtime.CallDepth.enter(null);
         try {
-            writeForced(Thunk.force(value), sb, context, copyToStore, invalid);
+            writeForced(Thunk.force(value), sb, context, copyToStore, invalid, ahead);
         } finally {
             nixtruffle.runtime.CallDepth.exit(ctx);
         }
     }
 
-    private static void writeForced(Object v, StringBuilder sb, java.util.Set<String> context, boolean copyToStore, String[] invalid) {
+    private static void writeForced(Object v, StringBuilder sb, java.util.Set<String> context, boolean copyToStore, String[] invalid, boolean ahead) {
         switch (v) {
             case NixNull n -> sb.append("null");
             case Boolean b -> sb.append(b);
@@ -74,10 +79,11 @@ final class Json {
             }
             case NixPath p -> quote(Values.coerce(p, false, copyToStore, context, null), sb, invalid);
             case NixList l -> {
+                if (ahead) nixtruffle.runtime.Parallel.ahead(l.items);
                 sb.append('[');
                 for (int i = 0; i < l.size(); i++) {
                     if (i > 0) sb.append(',');
-                    write(l.items[i], sb, context, copyToStore, invalid);
+                    write(l.items[i], sb, context, copyToStore, invalid, ahead);
                 }
                 sb.append(']');
             }
@@ -87,15 +93,16 @@ final class Json {
                     return;
                 }
                 if (a.getRaw("outPath") != null) {
-                    write(a.getRaw("outPath"), sb, context, copyToStore, invalid);
+                    write(a.getRaw("outPath"), sb, context, copyToStore, invalid, ahead);
                     return;
                 }
+                if (ahead) nixtruffle.runtime.Parallel.ahead(a.values);
                 sb.append('{');
                 for (int i = 0; i < a.size(); i++) {
                     if (i > 0) sb.append(',');
                     quote(a.keys[i], sb, invalid);
                     sb.append(':');
-                    write(a.values[i], sb, context, copyToStore, invalid);
+                    write(a.values[i], sb, context, copyToStore, invalid, ahead);
                 }
                 sb.append('}');
             }
@@ -103,9 +110,9 @@ final class Json {
             default -> {
                 Object[] items = Foreign.isForeign(v) ? Foreign.asArray(v) : null;
                 if (items != null) {
-                    write(new NixList(items), sb, context, copyToStore, invalid);
+                    write(new NixList(items), sb, context, copyToStore, invalid, ahead);
                 } else if (Foreign.isForeign(v) && Foreign.hasMembers(v)) {
-                    write(Foreign.asAttrs(v), sb, context, copyToStore, invalid);
+                    write(Foreign.asAttrs(v), sb, context, copyToStore, invalid, ahead);
                 } else {
                     throw NixException.error("cannot convert " + Values.typeName(v) + " to JSON", null);
                 }

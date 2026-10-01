@@ -22,6 +22,7 @@ public final class ValuePrinter {
     private final Set<String> context;
     /** {@code nix eval}'s options, or {@code errorPrintOptions}: not forced, and cut short. */
     private final boolean errorOptions;
+    private boolean ahead;
     private int attrsPrinted, listItemsPrinted;
 
     private static final int ERROR_MAX = 10;
@@ -36,6 +37,15 @@ public final class ValuePrinter {
     @TruffleBoundary
     public static String print(Object value, Set<String> context) {
         ValuePrinter p = new ValuePrinter(context, false);
+        p.print(value, 0);
+        return p.out.toString();
+    }
+
+    /** {@link #print} for {@code nix eval}'s result: workers evaluate the parts about to be printed (see {@link Parallel}). */
+    @TruffleBoundary
+    public static String printResult(Object value, Set<String> context) {
+        ValuePrinter p = new ValuePrinter(context, false);
+        p.ahead = true;
         p.print(value, 0);
         return p.out.toString();
     }
@@ -139,6 +149,7 @@ public final class ValuePrinter {
         } else {
             Arrays.sort(keys);
         }
+        if (ahead) Parallel.ahead(a.values);
         out.append('{');
         int printed = 0;
         for (String key : keys) {
@@ -166,6 +177,7 @@ public final class ValuePrinter {
             out.append("[ ... ]");
             return;
         }
+        if (ahead) Parallel.ahead(l.items);
         out.append('[');
         for (int i = 0; i < l.size(); i++) {
             out.append(' ');

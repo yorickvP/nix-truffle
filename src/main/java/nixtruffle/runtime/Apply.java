@@ -25,7 +25,7 @@ public final class Apply {
         if (f instanceof NixAttrs attrs) {
             Object functor = attrs.get("__functor");
             if (functor != null) {
-                nixtruffle.NixContext ctx = CallDepth.enter(location);
+                EvalThread ctx = CallDepth.enter(location);
                 try {
                     return apply(apply(functor, attrs, location), arg, location);
                 } finally {
@@ -33,7 +33,10 @@ public final class Apply {
                 }
             }
         }
-        if (Foreign.isForeign(f)) return Foreign.call(f, new Object[] {arg}, location);
+        if (Foreign.isForeign(f)) {
+            Parallel.mainOnly(location, "a foreign function");
+            return Foreign.call(f, new Object[] {arg}, location);
+        }
         throw NixException.error("attempt to call something which is not a function but " + Values.typeName(f) + ": " + ValuePrinter.printForError(f), location);
     }
 
@@ -53,7 +56,8 @@ public final class Apply {
     }
 
     private static Object primop(Builtin b, Object[] args, Node location) {
-        nixtruffle.NixContext ctx = CallDepth.enter(location);
+        if (b.mainOnly) Parallel.mainOnly(location, b.name);
+        EvalThread ctx = CallDepth.enter(location);
         try {
             return b.impl.apply(args);
         } finally {

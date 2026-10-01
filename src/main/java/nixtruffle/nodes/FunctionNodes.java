@@ -50,7 +50,7 @@ public final class FunctionNodes {
         /** A call is a level of {@code max-call-depth}, binding the arguments included. */
         @Override
         public Object execute(VirtualFrame frame) {
-            NixContext ctx = CallDepth.enter(this);
+            nixtruffle.runtime.EvalThread ctx = CallDepth.enter(this);
             try {
                 prologue.execute(frame);
                 return body.execute(frame);

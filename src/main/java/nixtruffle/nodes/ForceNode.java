@@ -43,7 +43,8 @@ public abstract class ForceNode extends Node {
                               @Cached("thunk.getCode()") Object cachedCode,
                               @Cached("create(target(cachedCode))") DirectCallNode call) {
         Object env = thunk.getEnv();
-        thunk.enter(this);
+        // Another thread got there first.
+        if (!thunk.claim(cachedCode)) return thunk.force(this);
         boolean ok = false;
         try {
             Object result = call.call(env);
@@ -55,20 +56,28 @@ public abstract class ForceNode extends Node {
         }
     }
 
+    /** Being evaluated: by this thread (an infinite recursion), or by another one (waits for it). */
+    @Specialization(guards = "thunk.isRunning()")
+    protected Object doRunning(Thunk thunk) {
+        return thunk.force(this);
+    }
+
     @Specialization(replaces = "doDirect")
     protected Object doIndirect(Thunk thunk, @Cached IndirectCallNode call) {
-        if (thunk.isDone()) return thunk.getValue();
-        Object code = thunk.getCode();
-        Object env = thunk.getEnv();
-        thunk.enter(this);
-        boolean ok = false;
-        try {
-            Object result = call.call(Thunk.target(code), env);
-            thunk.complete(result);
-            ok = true;
-            return result;
-        } finally {
-            if (!ok) thunk.reset(code);
+        while (true) {
+            Object code = thunk.getCode();
+            if (!Thunk.isRunnable(code)) return thunk.force(this);
+            Object env = thunk.getEnv();
+            if (!thunk.claim(code)) continue;
+            boolean ok = false;
+            try {
+                Object result = call.call(Thunk.target(code), env);
+                thunk.complete(result);
+                ok = true;
+                return result;
+            } finally {
+                if (!ok) thunk.reset(code);
+            }
         }
     }
 

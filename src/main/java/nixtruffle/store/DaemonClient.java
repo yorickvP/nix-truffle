@@ -56,7 +56,7 @@ public final class DaemonClient implements AutoCloseable {
         processStderr();
     }
 
-    public boolean isValidPath(String path) throws IOException {
+    public synchronized boolean isValidPath(String path) throws IOException {
         writeU64(OP_IS_VALID_PATH);
         writeString(path);
         flush();
@@ -68,7 +68,7 @@ public final class DaemonClient implements AutoCloseable {
     public record PathInfo(String narHash, java.util.List<String> references, long narSize, String ca) {}
 
     /** {@code wopQueryPathInfo}: null if the path isn't valid. */
-    public PathInfo queryPathInfo(String path) throws IOException {
+    public synchronized PathInfo queryPathInfo(String path) throws IOException {
         writeU64(OP_QUERY_PATH_INFO);
         writeString(path);
         flush();
@@ -89,7 +89,7 @@ public final class DaemonClient implements AutoCloseable {
     }
 
     /** {@code wopAddTempRoot}: protects a path from garbage collection while we're connected. */
-    public void addTempRoot(String path) throws IOException {
+    public synchronized void addTempRoot(String path) throws IOException {
         writeU64(OP_ADD_TEMP_ROOT);
         writeString(path);
         flush();
@@ -106,7 +106,7 @@ public final class DaemonClient implements AutoCloseable {
      * Adds a content-addressed path; {@code method} is {@code text:sha256}, {@code fixed:r:sha256}
      * or {@code fixed:sha256}. Returns the store path the daemon computed.
      */
-    public String addToStore(String name, String method, Collection<String> references, Dump dump) throws IOException {
+    public synchronized String addToStore(String name, String method, Collection<String> references, Dump dump) throws IOException {
         writeU64(OP_ADD_TO_STORE);
         writeString(name);
         writeString(method);
@@ -137,7 +137,7 @@ public final class DaemonClient implements AutoCloseable {
             }
 
             @Override
-            public void close() throws IOException {
+            public synchronized void close() throws IOException {
                 if (buf.size() > 0) frame();
             }
         };
@@ -251,7 +251,7 @@ public final class DaemonClient implements AutoCloseable {
     }
 
     @Override
-    public void close() throws IOException {
+    public synchronized void close() throws IOException {
         channel.close();
     }
 }

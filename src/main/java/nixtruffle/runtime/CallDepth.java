@@ -2,7 +2,6 @@ package nixtruffle.runtime;
 
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.nodes.Node;
-import nixtruffle.NixContext;
 
 /**
  * CppNix's {@code max-call-depth}. Function calls, and the recursion of comparisons, string
@@ -16,21 +15,21 @@ public final class CallDepth {
     private CallDepth() {}
 
     /** Enters a level (CppNix's {@code addCallDepth}); leave it with {@link #exit}. */
-    public static NixContext enter(Node location) {
-        NixContext ctx = NixContext.get(location);
-        if (ctx.callDepth > ctx.maxCallDepth) throw overflow(location);
-        ctx.callDepth++;
-        return ctx;
+    public static EvalThread enter(Node location) {
+        EvalThread t = EvalThread.current(location);
+        if (t.callDepth > t.maxCallDepth) throw overflow(location);
+        t.callDepth++;
+        return t;
     }
 
-    public static void exit(NixContext ctx) {
-        ctx.callDepth--;
+    public static void exit(EvalThread t) {
+        t.callDepth--;
     }
 
     /** What entering a level would check, for operations that don't nest. */
     public static void check(Node location) {
-        NixContext ctx = NixContext.get(location);
-        if (ctx.callDepth > ctx.maxCallDepth) throw overflow(location);
+        EvalThread t = EvalThread.current(location);
+        if (t.callDepth > t.maxCallDepth) throw overflow(location);
     }
 
     private static NixException overflow(Node location) {

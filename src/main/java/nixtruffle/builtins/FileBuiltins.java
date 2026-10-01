@@ -10,6 +10,7 @@ import nixtruffle.runtime.NixAttrs;
 import nixtruffle.runtime.NixException;
 import nixtruffle.runtime.NixList;
 import nixtruffle.runtime.NixPath;
+import nixtruffle.runtime.Parallel;
 import nixtruffle.runtime.NixString;
 import nixtruffle.runtime.Values;
 import nixtruffle.store.Hash;
@@ -278,8 +279,9 @@ public final class FileBuiltins {
             throw error("file '" + file + "' must be an attribute set");
         }
         Object result = ctx.language.parse(text, file, file, null, null).call();
-        ctx.importCache.put(file, result);
-        return result;
+        // Another thread may have evaluated it too: everyone gets the first one.
+        Object first = ctx.importCache.putIfAbsent(file, result);
+        return first != null ? first : result;
     }
 
     /** {@code import} and {@code scopedImport}; {@code fresh} evaluates the file even if it has been already. */
@@ -300,6 +302,7 @@ public final class FileBuiltins {
         Object result;
         String language = ctx.settings.getBool("polyglot") ? foreignLanguage(file) : null;
         if (language != null) {
+            Parallel.mainOnly(null, "a foreign import");
             try {
                 var source = com.oracle.truffle.api.source.Source.newBuilder(language, ctx.env.getPublicTruffleFile(Bytes.toJava(file))).build();
                 result = Foreign.toNix(ctx.env.parsePublic(source).call());
@@ -309,8 +312,13 @@ public final class FileBuiltins {
         } else {
             result = parseFile(ctx, file, null).call();
         }
-        ctx.importCache.put(file, result);
-        return result;
+        if (fresh) {
+            ctx.importCache.put(file, result);
+            return result;
+        }
+        // Another thread may have evaluated it too: everyone gets the first one.
+        Object first = ctx.importCache.putIfAbsent(file, result);
+        return first != null ? first : result;
     }
 
     private static boolean isValid(String storePath) {

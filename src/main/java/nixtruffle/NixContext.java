@@ -16,11 +16,11 @@ public final class NixContext {
     public final NixLanguage language;
     public final Env env;
     /** Results of {@code import}, per canonical path (Nix evaluates each file once). */
-    public final Map<String, Object> importCache = new HashMap<>();
+    public final Map<String, Object> importCache = new java.util.concurrent.ConcurrentHashMap<>();
     /** Lookup path entries ({@code nixpkgs=flake:nixpkgs}, URLs) resolved so far; null if unusable. */
-    public final Map<String, String> lookupPathCache = new HashMap<>();
+    public final Map<String, String> lookupPathCache = new java.util.concurrent.ConcurrentHashMap<>();
     /** {@code builtins.wasm}: modules compiled so far, by path. */
-    public final Map<String, Object> wasmModules = new HashMap<>();
+    public final Map<String, Object> wasmModules = new java.util.concurrent.ConcurrentHashMap<>();
     public final PrintStream err;
     public final nixtruffle.store.Store store = new nixtruffle.store.Store();
     private Object derivationLambda;
@@ -34,9 +34,13 @@ public final class NixContext {
 
     /** {@code pure-eval}: files can only be read from store paths in {@link #allowedPaths}. */
     public final boolean pureEval;
-    /** The depth of calls and recursive operations, and its limit (see {@link nixtruffle.runtime.CallDepth}). */
-    public int callDepth;
+    /** The limit of the depth of calls and recursive operations (see {@link nixtruffle.runtime.CallDepth}). */
     public final int maxCallDepth;
+    /** The thread that evaluates (the one that made the context, not a worker of {@link nixtruffle.runtime.Parallel}), and its state. */
+    public final Thread mainThread = Thread.currentThread();
+    public final nixtruffle.runtime.EvalThread main;
+    /** Evaluation on more threads ({@code eval-cores}), or null. */
+    public final nixtruffle.runtime.Parallel parallel;
     /**
      * In pure evaluation, the store paths that may be read: fetched trees, and what {@code
      * toFile}, {@code builtins.path} and path interpolation added (CppNix's {@code allowPath}).
@@ -51,6 +55,10 @@ public final class NixContext {
         this.store.readOnly = readOnly;
         this.pureEval = settings.getBool("pure-eval");
         this.maxCallDepth = (int) Math.min(Integer.MAX_VALUE, settings.getLong("max-call-depth", 10000));
+        this.main = new nixtruffle.runtime.EvalThread(maxCallDepth);
+        long cores = settings.getLong("eval-cores", 1);
+        if (cores == 0) cores = Runtime.getRuntime().availableProcessors();
+        this.parallel = cores > 1 ? new nixtruffle.runtime.Parallel(this, (int) cores - 1) : null;
     }
 
     private nixtruffle.fetch.Fetcher fetcher;
@@ -65,7 +73,7 @@ public final class NixContext {
     }
 
     /** Allows reading a store path (and everything in it) in pure evaluation. */
-    public void allowPath(String storePath) {
+    public synchronized void allowPath(String storePath) {
         if (pureEval) allowedPaths.add(storePath);
     }
 
@@ -73,7 +81,7 @@ public final class NixContext {
      * In pure evaluation, a path (a byte string) can only be accessed if it is in an allowed path
      * or is a parent directory of one, like CppNix's {@code AllowListSourceAccessor}.
      */
-    public void checkAccess(String path) {
+    public synchronized void checkAccess(String path) {
         if (!pureEval || path.startsWith("/__corepkgs__/") || allowedPaths.contains(path)) return;
         String within = allowedPaths.ceiling(path.equals("/") ? "/" : path + "/");
         if (within != null && within.startsWith(path.equals("/") ? "/" : path + "/")) return;
@@ -166,8 +174,9 @@ public final class NixContext {
         String text = corepkg(name);
         if (text == null) throw nixtruffle.runtime.NixException.error("file '" + key + "' does not exist", null);
         Object result = language.parse(text, key, key, null, null).call();
-        importCache.put(key, result);
-        return result;
+        // Another thread may have evaluated it too: everyone gets the first one.
+        Object first = importCache.putIfAbsent(key, result);
+        return first != null ? first : result;
     }
 
     /** The {@code derivation} function: the derivation.nix wrapper around derivationStrict. */
