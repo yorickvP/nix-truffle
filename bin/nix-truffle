@@ -12,14 +12,21 @@ java=java
 [[ -n "${JAVA_HOME:-}" ]] && java="$JAVA_HOME/bin/java"
 java="$(command -v "$java" || echo "$java")"
 # Compact object headers (8 instead of 12 bytes) take a third off the memory of large evaluations.
+# Compiled Nix code outgrows the default 240 MB code cache, and then every few seconds HotSpot runs
+# a full collection (half a second on a NixOS evaluation's heap) to unload compiled code.
 jvm=(--enable-native-access=ALL-UNNAMED --sun-misc-unsafe-memory-access=allow -Dpolyglot.engine.WarnInterpreterOnly=true
-  -XX:+UseCompactObjectHeaders ${NIX_TRUFFLE_JAVA_OPTS:-})
+  -XX:+UseCompactObjectHeaders -XX:ReservedCodeCacheSize=512m ${NIX_TRUFFLE_JAVA_OPTS:-})
 cp="$root/target/classes:$(cat "$root/target/classpath.txt")"
 # One evaluation runs fastest, in the least memory, with the throughput collector holding the heap
 # to about five times the time spent collecting (half of G1's memory on a NixOS evaluation, and
 # 8% faster). The daemon uses G1 (see Client.java), which gives memory back between commands.
+# What survives a young collection mostly lives until the end (the thunks and values evaluation
+# keeps), so it goes to the old generation at once instead of being copied between survivor
+# spaces, and collections use all cores (the default leaves 9 of 32 idle). Both together with the
+# code cache: 5% faster in 7% less memory on one core, 15% faster in 28% less with eval-cores 8.
 gc=()
-[[ "${NIX_TRUFFLE_JAVA_OPTS:-}" == *GC* ]] || gc=(-XX:+UseParallelGC -XX:GCTimeRatio=4)
+[[ "${NIX_TRUFFLE_JAVA_OPTS:-}" == *GC* ]] || gc=(-XX:+UseParallelGC -XX:GCTimeRatio=4 -XX:MaxTenuringThreshold=0
+  "-XX:ParallelGCThreads=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN)")
 if [[ "${NIX_TRUFFLE_DAEMON:-}" == 1 ]]; then
   # The client is a small JVM that only relays: no JIT beyond C1, the smallest GC.
   exec "$java" -XX:TieredStopAtLevel=1 -XX:+UseSerialGC -XX:-UsePerfData -cp "$root/target/classes" \

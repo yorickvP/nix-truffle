@@ -318,7 +318,7 @@ On this machine (32 cores):
 | | `1+1` | nixpkgs `hello.drvPath` | minimal NixOS `toplevel.drvPath` | a desktop NixOS config |
 |---|---|---|---|---|
 | Lix 2.94 | 0.02 s | 0.22 s | 2.5 s | 12.6 s |
-| JVM, one run (GraalVM CE 25.3) | 0.30 s | 0.98 s | 4.4 s | 11.9 s |
+| JVM, one run (GraalVM CE 25.3) | 0.30 s | 1.0 s | 3.8 s | 9.6 s |
 | daemon, warm | 0.065 s | 0.26 s | 1.6–2.0 s | 6.9 s, also after an edit |
 | native, GraalVM CE (serial GC) | 0.005 s | 0.70 s | 15.5 s | |
 | native, Oracle GraalVM, G1 + PGO | 0.012 s | 0.48 s | 4.55 s | 14 s |
@@ -368,10 +368,10 @@ are already evaluated by then cost a check.
 
 Evaluating all seven NixOS configurations of a flake in one command (`nix-truffle eval --json
 .#nixosConfigurations --apply 'builtins.mapAttrs (n: c: c.config.system.build.toplevel.drvPath)'`)
-takes 10.2 s with `--option eval-cores 8` instead of 28.3 s (Lix: 35.6 s). The largest of them
-alone takes 6.4 s instead of 10.0 s cold, and 4.0 s instead of about 7 s warm in the daemon. The
+takes 9.4 s with `--option eval-cores 8` instead of 26.4 s (Lix: 35.6 s). The largest of them
+alone takes 5.7 s instead of 9.6 s cold, and 3.1 s instead of 6.8 s warm in the daemon. The
 store is used without a lock (computing store paths means hashing sources and derivations), and
-peak memory grows with the work in progress: 12–13 GB for all seven, against 9.5 GB on one core.
+peak memory grows with the work in progress: 10.6 GB for all seven, against 8.5 GB on one core.
 `-Dnixtruffle.parallelStats=true` prints what the workers did and how long threads waited.
 
 ## What's there and what isn't

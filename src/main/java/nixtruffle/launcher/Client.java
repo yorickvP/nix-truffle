@@ -180,7 +180,9 @@ public final class Client {
         if (onPath("setsid")) cmd.add("setsid");
         // G1 gives memory back to the system: it keeps the heap at most 30% free after the daemon's
         // collection when idle, and grows it less eagerly than by default (a few percent slower).
-        cmd.addAll(launch.command(List.of("-XX:+UseG1GC", "-XX:GCTimeRatio=9", "-XX:MinHeapFreeRatio=10", "-XX:MaxHeapFreeRatio=30"),
+        // Survivors are promoted at once and collections use all cores, as in bin/nix-truffle.
+        cmd.addAll(launch.command(List.of("-XX:+UseG1GC", "-XX:GCTimeRatio=9", "-XX:MinHeapFreeRatio=10", "-XX:MaxHeapFreeRatio=30",
+                        "-XX:MaxTenuringThreshold=0", "-XX:ParallelGCThreads=" + Runtime.getRuntime().availableProcessors()),
                 "nixtruffle.launcher.Daemon", List.of(socket.toString())));
         Process p = new ProcessBuilder(cmd).redirectInput(new File("/dev/null")).redirectErrorStream(true)
                 .redirectOutput(log.toFile()).start();
