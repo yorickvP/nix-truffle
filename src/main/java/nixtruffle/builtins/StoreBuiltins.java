@@ -293,6 +293,8 @@ final class StoreBuiltins {
     }
 
     private static Object derivationStrict(NixAttrs attrs, String drvName, Store store) {
+        // All of them are coerced, which evaluates the derivations they depend on.
+        nixtruffle.runtime.Parallel.ahead(attrs.values);
         String nameError = StorePaths.checkName(drvName);
         if (nameError != null) throw error("invalid derivation name: " + nameError + ". Please pass a different 'name'.");
         Object sa = attrs.getRaw("__structuredAttrs");

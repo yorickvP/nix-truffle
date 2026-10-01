@@ -331,29 +331,46 @@ make the minimal NixOS evaluation any slower either (4.1 s).
 ### Parallel evaluation
 
 With `eval-cores` (as in Determinate Nix: 1, the default, evaluates on one thread; 0 uses all
-cores), `nix-truffle eval` evaluates the parts of its result on other threads while it prints
-them (`runtime/Parallel.java`): the main thread hands the elements of each list and attribute set
-it is about to print to workers, and then goes through them in order, finding them evaluated or
-waiting for the worker evaluating one.
+cores), evaluation uses other threads where a thread is about to force many values anyway
+(`runtime/Parallel.java`). It offers them to idle workers, and then goes through them in order,
+finding them evaluated or waiting for the worker evaluating one. Those places are:
+
+- the lists and attribute sets that `nix-truffle eval` prints;
+- builtins that force every element of a list (`concatLists`, `sort`, `listToAttrs`, `catAttrs`,
+  `concatStringsSep`, string coercion of lists) or every application of a function to them
+  (`filter`, `concatMap`, `partition`, `groupBy`);
+- the attributes of a derivation, which reach the derivations it depends on.
+
+In a NixOS configuration, those are where independent parts come together. For example, the
+systemd module's `warnings` concatenates a list per service, which evaluates every service's
+configuration; on one of the test machines, that includes a microvm guest's whole system and the
+man page cache.
+
+Each such place adds one batch of values. Idle workers take the oldest batch first, since
+those are the biggest parts, and claim values from its end with an atomic counter. Values that
+are already evaluated by then cost a check.
 
 - A thunk is claimed with a compare-and-swap, and holds the thread evaluating it. A thread that
   finds its own thunk running has an infinite recursion, as before; one that finds another
   thread's waits for it. Threads that each wait for a thunk the next one is evaluating are an
   infinite recursion too (one thread would have found its own thunk), and report it as one.
-- Workers have no side effects the main thread wouldn't have in order: a worker that reaches
-  `getFlake`, Wasm or another language gives up its task (its thunks become pending again, and
-  the main thread evaluates them), and so does one that hits an error, which the main thread then
-  hits too, as a sequential evaluation would. Fetching is serialized, with its arguments evaluated
-  first. Traces and warnings from workers come out as they happen.
-- Workers start at the call depth the main thread would be at, so `max-call-depth` fails the
-  same recursions.
+- Workers have no side effects out of order: a worker that reaches `getFlake`, Wasm or another
+  language gives up its task (its thunks become pending again, and the thread that needs them
+  evaluates them), and so does one that hits an error, which that thread then hits too, as a
+  sequential evaluation would. Fetching is serialized, with its arguments evaluated first.
+  Traces and warnings from workers come out as they happen.
+- Workers start one call level deeper than the thread that offered the values. A worker that
+  reaches `max-call-depth` gives the value up, so the same recursions fail. The exception is a
+  value that a sequential evaluation would first have reached from deeper down: the worker
+  succeeds where that evaluation could have hit the limit.
 - Until the first worker starts, compiled code assumes one thread (a Truffle assumption):
   sequential evaluation costs the same as before.
 
 Evaluating all seven NixOS configurations of a flake in one command (`nix-truffle eval --json
 .#nixosConfigurations --apply 'builtins.mapAttrs (n: c: c.config.system.build.toplevel.drvPath)'`)
-takes 14.5 s with `--option eval-cores 8` instead of 28.3 s (Lix: 35.6 s). One configuration
-doesn't get faster yet: its evaluation is one value.
+takes 13.4 s with `--option eval-cores 8` instead of 28.3 s (Lix: 35.6 s). The largest of them
+alone takes 6.65 s instead of 10.0 s cold, and 4.0 s instead of about 7 s warm in the daemon.
+`-Dnixtruffle.parallelStats=true` prints what the workers did and how long threads waited.
 
 ## What's there and what isn't
 
@@ -377,7 +394,8 @@ doesn't get faster yet: its evaluation is one value.
   depending on them, which changes the order in which list options such as
   `environment.systemPackages` are merged.
 - **Approximations:** error messages have a location and a derivation trace but no full
-  Nix-style trace. Evaluation is single-threaded, and there is no evaluation cache.
+  Nix-style trace. Evaluation is single-threaded unless `eval-cores` says otherwise (see
+  above), and there is no evaluation cache.
 - **Known divergence:** CppNix keeps attribute sets in the order their names were first
   interned (well-known names like `drvPath` first, then in parse order), nix-truffle sorts
   them by name. Only which error comes first differs, when forcing all attributes

@@ -7,33 +7,71 @@ import nixtruffle.NixContext;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.LinkedBlockingDeque;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Evaluation on more threads ({@code eval-cores}, like Determinate Nix's; 0 for all cores). Where
- * the main thread is about to force many values anyway (printing, {@code toJSON}, {@code
- * deepSeq}), it hands them to workers first ({@link #ahead}), and then goes through them in order,
- * finding them evaluated, or waiting for the worker that is evaluating one (see {@link Thunk}).
+ * a thread is about to force many values anyway, it first offers them to workers ({@link #ahead}),
+ * and then goes through them in order, finding them evaluated, or waiting for the worker that is
+ * evaluating one (see {@link Thunk}). Those places are the printing of {@code nix eval}'s result,
+ * and builtins that force all elements of a list or all applications of a function to them
+ * ({@code concatLists}, {@code filter}, {@code concatMap}, string coercion, {@code
+ * derivationStrict}, ...). In a NixOS configuration, that is where independent parts come
+ * together: {@code warnings} concatenates a list per systemd service, and each derivation coerces
+ * the derivations it depends on.
  *
- * <p>Workers evaluate without side effects: a worker that reaches one (a trace, a fetch, another
- * language: {@link #mainOnly}) gives up its task, which unwinds its thunks to pending, and the main
- * thread evaluates them in order. So does a worker that hits an error: the main thread gets the
- * same error, in the order a sequential evaluation would.
+ * <p>Workers evaluate without side effects out of order: a worker that reaches one (a fetch that
+ * evaluates, another language: {@link #mainOnly}) gives up its task, which unwinds its thunks to
+ * pending, and the thread that needs them evaluates them in order. So does a worker that hits an
+ * error: the thread that needs the value gets the same error, in the order a sequential evaluation
+ * would.
  */
 public final class Parallel {
     private final NixContext ctx;
     private final int workers;
-    /** A value to evaluate, at the call depth the main thread would evaluate it at. */
-    private record Task(Thunk thunk, int callDepth) {}
 
-    private final LinkedBlockingDeque<Task> tasks = new LinkedBlockingDeque<>();
+    /**
+     * Values that a thread is about to force in order, at the call depth it forces them at. Workers
+     * take them from the end ({@code end} counts down), the thread goes through them from the
+     * front; the first one is its own.
+     */
+    private static final class Batch {
+        final Object[] values;
+        final int callDepth;
+        final AtomicInteger end;
+
+        Batch(Object[] values, int callDepth) {
+            this.values = values;
+            this.callDepth = callDepth;
+            this.end = new AtomicInteger(values.length);
+        }
+
+        /** A value to evaluate, or null when there are none left. */
+        Thunk claim() {
+            for (int i; (i = end.decrementAndGet()) >= 1; ) {
+                if (values[i] instanceof Thunk t && !t.isDone() && !t.isRunning()) return t;
+            }
+            return null;
+        }
+    }
+
+    /** Workers take the oldest first: those are the biggest parts of the evaluation. */
+    private final ConcurrentLinkedDeque<Batch> batches = new ConcurrentLinkedDeque<>();
+    /** Workers waiting for a batch, woken by {@code signal}. */
+    private final AtomicInteger idle = new AtomicInteger();
+    private final Object signal = new Object();
     private final List<Thread> threads = new ArrayList<>();
+    private volatile boolean started;
     private volatile boolean stopped;
+    /** Whether any context evaluates in parallel: until one does, {@link #ahead} only reads this. */
+    private static volatile boolean enabled;
 
     public Parallel(NixContext ctx, int workers) {
         this.ctx = ctx;
         this.workers = workers;
+        enabled = true;
     }
 
     /** A worker gives up a task: it reached something only the main thread may do. */
@@ -67,7 +105,11 @@ public final class Parallel {
     }
 
     private static void count(String what) {
-        if (STATS != null) STATS.computeIfAbsent(what, k -> new java.util.concurrent.atomic.AtomicLong()).incrementAndGet();
+        add(what, 1);
+    }
+
+    static void add(String what, long n) {
+        if (STATS != null) STATS.computeIfAbsent(what, k -> new java.util.concurrent.atomic.AtomicLong()).addAndGet(n);
     }
 
     private static final java.util.concurrent.locks.ReentrantLock FETCH = new java.util.concurrent.locks.ReentrantLock();
@@ -112,30 +154,55 @@ public final class Parallel {
     }
 
     /**
-     * Has idle workers evaluate the values (to weak head normal form) that aren't yet: the parts of
-     * the result of {@code nix eval} that the main thread is about to print (not yet in builtins
-     * like {@code toJSON} inside the evaluation, whose parts are mostly small). The main thread
-     * goes through them from the front, and the workers take them from the back.
+     * Offers the values to idle workers, to evaluate to weak head normal form: the caller is about
+     * to force them all, in order. It goes through them from the front, and workers take them from
+     * the back.
      */
-    @TruffleBoundary
     public static void ahead(Object[] values) {
-        if (values.length < 2) return;
-        NixContext ctx = NixContext.get(null);
-        Parallel p = ctx.parallel;
-        if (p != null && Thread.currentThread() == ctx.mainThread) p.submit(values);
+        if (enabled && values.length >= 2) offer(values);
     }
 
-    private synchronized void submit(Object[] values) {
-        if (stopped) return;
-        if (threads.isEmpty()) start();
-        // The printer forces each value a level deeper (see CallDepth).
-        int depth = ctx.main.callDepth + 1;
-        for (Object v : values) {
-            if (v instanceof Thunk t && !t.isDone() && !t.isRunning()) tasks.add(new Task(t, depth));
+    @TruffleBoundary
+    private static void offer(Object[] values) {
+        Parallel p = NixContext.get(null).parallel;
+        if (p != null) p.submit(values);
+    }
+
+    /**
+     * The applications of {@code f} to each of the values, offered to workers like {@link #ahead},
+     * for builtins that apply it to them all ({@code filter}, {@code concatMap}); null without
+     * workers, and then the builtin calls {@code f} itself.
+     */
+    public static Object[] applications(Object f, Object[] values) {
+        return enabled && values.length >= 2 ? offerApplications(f, values) : null;
+    }
+
+    @TruffleBoundary
+    private static Object[] offerApplications(Object f, Object[] values) {
+        Parallel p = NixContext.get(null).parallel;
+        if (p == null) return null;
+        Object[] apps = new Object[values.length];
+        for (int i = 0; i < values.length; i++) apps[i] = Apply.lazy(f, values[i]);
+        p.submit(apps);
+        return apps;
+    }
+
+    private void submit(Object[] values) {
+        if (!started) start();
+        // The caller forces each value a level deeper (see CallDepth). Where it forces one at the
+        // same level, a worker that reaches max-call-depth gives the value up, and the caller
+        // evaluates it.
+        batches.add(new Batch(values, EvalThread.current(null).callDepth + 1));
+        if (idle.get() > 0) {
+            synchronized (signal) {
+                signal.notifyAll();
+            }
         }
     }
 
-    private void start() {
+    private synchronized void start() {
+        if (started || stopped) return;
+        started = true;
         EvalThread.SINGLE_THREADED.invalidate();
         for (int i = 0; i < workers; i++) {
             Thread t = ctx.env.newTruffleThreadBuilder(this::work).stackSize(Long.getLong("nixtruffle.stackMb", 128) << 20).build();
@@ -150,22 +217,41 @@ public final class Parallel {
         EvalThread self = EvalThread.current(null);
         self.worker = true;
         while (!stopped) {
-            Task t;
-            try {
-                t = tasks.pollLast(100, TimeUnit.MILLISECONDS);
-            } catch (InterruptedException e) {
-                return;
+            Thunk thunk = null;
+            int depth = 0;
+            for (var it = batches.iterator(); it.hasNext(); ) {
+                Batch b = it.next();
+                thunk = b.claim();
+                if (thunk != null) {
+                    depth = b.callDepth;
+                    break;
+                }
+                it.remove();
             }
-            if (t == null) continue;
+            if (thunk == null) {
+                idle.incrementAndGet();
+                try {
+                    synchronized (signal) {
+                        if (batches.isEmpty()) signal.wait(100);
+                    }
+                } catch (InterruptedException e) {
+                    return;
+                } finally {
+                    idle.decrementAndGet();
+                }
+                continue;
+            }
             count("tasks");
-            self.callDepth = t.callDepth();
+            long t0 = STATS != null ? System.nanoTime() : 0;
+            self.callDepth = depth;
             try {
-                t.thunk().forceSlow();
+                thunk.forceSlow();
                 count("tasks done");
+                add("tasks ms", STATS != null ? (System.nanoTime() - t0) / 1_000_000 : 0);
             } catch (Abandon e) {
                 count("tasks given up");
             } catch (AbstractTruffleException | StackOverflowError e) {
-                // An error: the main thread will find it.
+                // An error: the thread that needs the value will find it.
                 count("tasks failed: " + e.getClass().getSimpleName() + ": " + String.valueOf(e.getMessage()).lines().findFirst().orElse(""));
             }
         }

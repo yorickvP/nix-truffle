@@ -170,6 +170,7 @@ public final class Values {
             if (f instanceof NixNull) return "";
             if (f instanceof NixList l) {
                 StringBuilder sb = new StringBuilder();
+                Parallel.ahead(l.items);
                 for (int i = 0; i < l.items.length; i++) {
                     // Like CppNix, the item is forced one level deeper, by the recursive coercion.
                     sb.append(coerce(l.items[i], true, copyToStore, context, location));

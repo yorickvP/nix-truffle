@@ -14,6 +14,7 @@ import nixtruffle.runtime.NixList;
 import nixtruffle.runtime.NixNull;
 import nixtruffle.runtime.NixPath;
 import nixtruffle.runtime.NixString;
+import nixtruffle.runtime.Parallel;
 import nixtruffle.runtime.PartialApp;
 import nixtruffle.runtime.Printer;
 import nixtruffle.runtime.Thunk;
@@ -239,7 +240,11 @@ public final class Builtins {
             if (xs.size() == 0) return xs;
             Object f = Values.function(a[0]);
             List<Object> out = new ArrayList<>();
-            for (Object x : xs.items) if (bool(call(f, x))) out.add(x);
+            Object[] apps = Parallel.applications(f, xs.items);
+            for (int i = 0; i < xs.items.length; i++) {
+                Object x = xs.items[i];
+                if (bool(apps != null ? force(apps[i]) : call(f, x))) out.add(x);
+            }
             return out.size() == xs.size() ? xs : new NixList(out.toArray());
         });
         def("foldl'", 3, a -> {
@@ -266,6 +271,7 @@ public final class Builtins {
         });
         def("concatLists", 1, a -> {
             Object[] lists = list(a[0]);
+            Parallel.ahead(lists);
             List<Object> out = new ArrayList<>();
             for (Object l : lists) out.addAll(Arrays.asList(list(l)));
             return new NixList(out.toArray());
@@ -273,7 +279,9 @@ public final class Builtins {
         def("concatMap", 2, a -> {
             Object f = Values.function(a[0]);
             List<Object> out = new ArrayList<>();
-            for (Object x : list(a[1])) out.addAll(Arrays.asList(list(call(f, x))));
+            Object[] xs = list(a[1]);
+            Object[] apps = Parallel.applications(f, xs);
+            for (int i = 0; i < xs.length; i++) out.addAll(Arrays.asList(list(apps != null ? apps[i] : call(f, xs[i]))));
             return new NixList(out.toArray());
         });
         def("sort", 2, a -> {
@@ -281,6 +289,7 @@ public final class Builtins {
             if (xs.size() == 0) return xs;
             Object f = Values.function(a[0]);
             Object[] items = new Object[xs.size()];
+            Parallel.ahead(xs.items);
             for (int i = 0; i < items.length; i++) items[i] = xs.forceAt(i);
             boolean isLessThan = f instanceof Builtin b && b.name.equals("lessThan");
             PeekSort.sort(items, isLessThan ? (x, y) -> Values.lessThan(x, y, null) : (x, y) -> bool(call(f, x, y)));
@@ -291,16 +300,19 @@ public final class Builtins {
             NixList xs = nixList(a[1]);
             List<Object> right = new ArrayList<>();
             List<Object> wrong = new ArrayList<>();
+            Object[] apps = Parallel.applications(f, xs.items);
             for (int i = 0; i < xs.size(); i++) {
                 Object x = xs.forceAt(i);
-                (bool(call(f, x)) ? right : wrong).add(x);
+                (bool(apps != null ? force(apps[i]) : call(f, x)) ? right : wrong).add(x);
             }
             return set("right", new NixList(right.toArray()), "wrong", new NixList(wrong.toArray()));
         });
         def("groupBy", 2, a -> {
             Object f = Values.function(a[0]);
             TreeMap<String, List<Object>> groups = new TreeMap<>();
-            for (Object x : list(a[1])) groups.computeIfAbsent(stringNoCtx(call(f, x)), k -> new ArrayList<>()).add(x);
+            Object[] xs = list(a[1]);
+            Object[] apps = Parallel.applications(f, xs);
+            for (int i = 0; i < xs.length; i++) groups.computeIfAbsent(stringNoCtx(apps != null ? force(apps[i]) : call(f, xs[i])), k -> new ArrayList<>()).add(xs[i]);
             TreeMap<String, Object> out = new TreeMap<>();
             groups.forEach((k, v) -> out.put(k, new NixList(v.toArray())));
             return NixAttrs.fromMap(out);
@@ -334,6 +346,7 @@ public final class Builtins {
             // Names first (all of them), then the value of the first element with each name.
             String[] names = new String[items.length];
             NixAttrs[] entries = new NixAttrs[items.length];
+            Parallel.ahead(items);
             for (int i = 0; i < items.length; i++) {
                 entries[i] = attrs(items[i]);
                 names[i] = stringNoCtx(required(entries[i], "name"));
@@ -389,7 +402,9 @@ public final class Builtins {
         def("catAttrs", 2, a -> {
             String name = stringNoCtx(a[0]);
             List<Object> out = new ArrayList<>();
-            for (Object x : list(a[1])) {
+            Object[] xs = list(a[1]);
+            Parallel.ahead(xs);
+            for (Object x : xs) {
                 Object v = attrs(x).getRaw(name);
                 if (v != null) out.add(v);
             }
@@ -465,6 +480,7 @@ public final class Builtins {
             String sep = string(a[0], context);
             StringBuilder sb = new StringBuilder();
             Object[] items = list(a[1]);
+            Parallel.ahead(items);
             for (int i = 0; i < items.length; i++) {
                 if (i > 0) sb.append(sep);
                 sb.append(Values.coerce(items[i], false, true, context, null));

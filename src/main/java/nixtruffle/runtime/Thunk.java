@@ -179,6 +179,7 @@ public final class Thunk {
         // Have the owner wake us when it's done (only then: completing a thunk nobody waits for is cheap).
         if (code instanceof Thread && !CODE.compareAndSet(this, code, new Awaited(owner))) return;
         WAITING.put(me, this);
+        long t0 = Parallel.STATS != null ? System.nanoTime() : 0;
         try {
             while (owner(getCode()) == owner) {
                 Thread o = owner;
@@ -199,6 +200,9 @@ public final class Thunk {
             throw new Parallel.Abandon();
         } finally {
             WAITING.remove(me);
+            if (Parallel.STATS != null) {
+                Parallel.add((EvalThread.current(location).worker ? "workers" : "main thread") + " waited ms", (System.nanoTime() - t0) / 1_000_000);
+            }
         }
     }
 
