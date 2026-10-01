@@ -369,6 +369,10 @@ and nix-truffle and diffs the output (errors are compared as "error"). The cases
 
 Currently all 37 checks pass against Lix 2.94 (with `SLOW=1`).
 
+`tests/attrs.sh` checks `//` and attribute lookups on random attribute sets against plain
+implementations. `bench/heap.sh EXPR` shows the live heap after an evaluation, by class (with
+`builtins.getFlake`, a NixOS configuration's values stay alive).
+
 `NIX=/path/to/cppnix/bin/nix tests/eval-cli.sh` compares `nix-truffle eval` with CppNix's
 `nix eval` (see above; `NIXPKGS=1` adds cases that fetch nixpkgs). `tests/wasm.sh` tests
 `builtins.wasm`, and with `PLUGINS`, `WASI` and `NIX_WASM_RUST` set runs nix-wasm-rust's test
