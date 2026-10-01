@@ -1,14 +1,11 @@
 package nixtruffle.nodes;
 
-import com.oracle.truffle.api.RootCallTarget;
 import com.oracle.truffle.api.frame.VirtualFrame;
-import nixtruffle.NixLanguage;
 import nixtruffle.runtime.Thunk;
 
 /**
- * Suspends an expression: captures the current frame together with the expression's own root.
- * Until the root is built (when the first of these thunks is forced), thunks run a {@link
- * LazyThunkRootNode} that builds it.
+ * Suspends an expression: a thunk of the expression's code (built when the first of its thunks is
+ * forced, see {@link LazyCode}) and the current environment.
  */
 public final class MakeThunkNode extends NixNode {
     private final LazyCode code;
@@ -19,9 +16,6 @@ public final class MakeThunkNode extends NixNode {
 
     @Override
     public Object execute(VirtualFrame frame) {
-        // Not a compilation constant: building the root elsewhere shouldn't invalidate this code.
-        RootCallTarget t = code.built();
-        if (t == null) return new Thunk(NixLanguage.get(this).lazyThunkTarget(), new LazyCode.Env(code, env(frame)));
-        return new Thunk(t, env(frame));
+        return new Thunk(code, env(frame));
     }
 }

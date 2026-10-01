@@ -31,7 +31,4 @@ public abstract class LazyCode {
         }
         return t;
     }
-
-    /** What a thunk of a body that hasn't been built closes over (see {@link LazyThunkRootNode}). */
-    public record Env(LazyCode code, Object[] env) {}
 }

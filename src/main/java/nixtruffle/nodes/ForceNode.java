@@ -15,7 +15,7 @@ import nixtruffle.runtime.Thunk;
  * <ul>
  *   <li>Sites that have only ever seen evaluated values keep just the {@code doValue}/{@code doDone}
  *       specializations: a type check or a state check, no call.
- *   <li>Unevaluated thunks are dispatched through an inline cache on the thunk's call target, so a
+ *   <li>Unevaluated thunks are dispatched through an inline cache on the thunk's code, so a
  *       monomorphic force site calls a {@link DirectCallNode} that Graal can inline: the thunk body
  *       is compiled into its consumer.
  *   <li>The thunk is blackholed while it runs, and memoizes the answer (or resets on error).
@@ -38,34 +38,46 @@ public abstract class ForceNode extends Node {
         return thunk.getValue();
     }
 
-    @Specialization(guards = {"!thunk.isDone()", "thunk.getTarget() == cachedTarget"}, limit = "3")
+    @Specialization(guards = {"thunk.getCode() == cachedCode", "isRunnable(cachedCode)"}, limit = "3")
     protected Object doDirect(Thunk thunk,
-                              @Cached("thunk.getTarget()") RootCallTarget cachedTarget,
-                              @Cached("create(cachedTarget)") DirectCallNode call) {
+                              @Cached("thunk.getCode()") Object cachedCode,
+                              @Cached("create(target(cachedCode))") DirectCallNode call) {
+        Object env = thunk.getEnv();
         thunk.enter(this);
         boolean ok = false;
         try {
-            Object result = call.call(thunk.getEnv());
+            Object result = call.call(env);
             thunk.complete(result);
             ok = true;
             return result;
         } finally {
-            if (!ok) thunk.reset();
+            if (!ok) thunk.reset(cachedCode);
         }
     }
 
-    @Specialization(guards = "!thunk.isDone()", replaces = "doDirect")
+    @Specialization(replaces = "doDirect")
     protected Object doIndirect(Thunk thunk, @Cached IndirectCallNode call) {
+        if (thunk.isDone()) return thunk.getValue();
+        Object code = thunk.getCode();
+        Object env = thunk.getEnv();
         thunk.enter(this);
         boolean ok = false;
         try {
-            Object result = call.call(thunk.getTarget(), thunk.getEnv());
+            Object result = call.call(Thunk.target(code), env);
             thunk.complete(result);
             ok = true;
             return result;
         } finally {
-            if (!ok) thunk.reset();
+            if (!ok) thunk.reset(code);
         }
+    }
+
+    protected static boolean isRunnable(Object code) {
+        return Thunk.isRunnable(code);
+    }
+
+    protected static RootCallTarget target(Object code) {
+        return Thunk.target(code);
     }
 
     protected static boolean isThunk(Object value) {
