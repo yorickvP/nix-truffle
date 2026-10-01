@@ -1,0 +1,14 @@
+/// Services, typed: Nix amends `services` (see example.nix), Pkl checks each one and fills in
+/// the defaults, and `urls` is derived from whatever Nix gave.
+class Service {
+  /// A DNS label.
+  name: String(matches(Regex("[a-z][a-z0-9-]*")))
+  port: Int(isBetween(1, 65535)) = 8080
+  restart: "always" | "on-failure" | "no" = "on-failure"
+  environment: Mapping<String, String> = new {}
+}
+
+domain: String = "example.org"
+services: Listing<Service>(isDistinctBy((s) -> s.name))
+
+urls = services.toList().map((s) -> "https://\(s.name).\(domain):\(s.port)")

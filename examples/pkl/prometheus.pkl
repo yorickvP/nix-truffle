@@ -1,0 +1,21 @@
+/// A Prometheus configuration: typed and checked like services.pkl, and rendered as YAML (with
+/// `builtins.pkl { ...; output = true; }`).
+class ScrapeConfig {
+  job_name: String
+  scrape_interval: Duration = 15.s
+  static_configs: Listing<StaticConfig>
+}
+
+class StaticConfig {
+  /// host:port
+  targets: Listing<String(matches(Regex(".+:[0-9]+")))>
+}
+
+global { scrape_interval = 1.min }
+scrape_configs: Listing<ScrapeConfig>
+
+output {
+  renderer = new YamlRenderer {
+    converters { [Duration] = (d) -> "\(d.value.toInt())\(d.unit)" }
+  }
+}

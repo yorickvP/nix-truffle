@@ -85,7 +85,7 @@
             pname = "nix-truffle";
             jdk = graalvm;
             profile = "community";
-            mvnHash = "sha256-RUvksHiSRcMzlQj7fdFMNHOdzU63MeAtVdM1T7TC04c=";
+            mvnHash = "sha256-rusip3Hz9nSsfXwKUKX/cXMNO0j96k097RreB4ARLjk=";
           };
         in {
           inherit nix-truffle;
@@ -110,7 +110,7 @@
               pname = "nix-truffle-oracle";
               jdk = graalvm-oracle;
               profile = "oracle";
-              mvnHash = "sha256-Yyyl6orngZloPb1X2XmGVhcqdGlJUbb2sSPVcgoqafo=";
+              mvnHash = "sha256-gUTzr2uYykYazlACUTy71tPC/R/PwvxS4PVTdF84c74=";
             };
             jdk = graalvm-oracle;
             flags = [ "--gc=G1" "-R:MaxRAMPercentage=75" "-R:ErgoHeapSizeLimit=${toString (30 * 1024 * 1024 * 1024)}"

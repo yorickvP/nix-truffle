@@ -15,7 +15,7 @@ public final class Builtin extends NixFunction {
     /** Has side effects (output, fetching, other languages), which only the main thread has (see {@link Parallel}). */
     public final boolean mainOnly;
 
-    private static final java.util.Set<String> MAIN_ONLY = java.util.Set.of("break", "wasm", "polyglotEval", "polyglotExport", "polyglotImport");
+    private static final java.util.Set<String> MAIN_ONLY = java.util.Set.of("break", "wasm", "polyglotEval", "polyglotExport", "polyglotImport", "pkl");
 
     public Builtin(String name, int arity, Impl impl) {
         this.name = name;

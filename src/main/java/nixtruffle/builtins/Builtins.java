@@ -586,6 +586,7 @@ public final class Builtins {
         defFeature("polyglotEval", 2, "polyglot", a -> Internals.polyglotEval(string(a[0]), string(a[1])));
         defFeature("polyglotImport", 1, "polyglot", a -> Internals.polyglotImport(string(a[0])));
         defFeature("polyglotExport", 2, "polyglot", a -> Internals.polyglotExport(string(a[0]), a[1]));
+        defFeature("pkl", 1, "polyglot", a -> PklEntry.eval(attrs(a[0])));
 
         FileBuiltins.install();
         StoreBuiltins.install();

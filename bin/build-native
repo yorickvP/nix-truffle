@@ -13,6 +13,9 @@ else
   echo "build-native: not built yet, run 'mvn -q package' in $root" >&2
   exit 1
 fi
+# Pkl (builtins.pkl, import of .pkl files) stays out: its Truffle language needs a native-image
+# configuration of its own. Using it in the image is an error (see builtins/PklEntry.java).
+cp="$(tr ':' '\n' <<< "$cp" | grep -vE '/([0-9]+-)?(pkl-core|pkl-parser|Paguro|snakeyaml-engine|msgpack-core|jspecify)-[^/]*\.jar$' | paste -sd:)"
 ni="$(command -v native-image)"
 opts=()
 # nixpkgs' native-image wrapper adds glibc's static libraries to the library path, and native-image

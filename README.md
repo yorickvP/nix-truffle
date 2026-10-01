@@ -81,8 +81,8 @@ as in Nix. The ones nix-truffle uses: `experimental-features` (`flakes` enables 
 `fetchTree` on URLs and the other flake builtins), `pure-eval`, `nix-path`, `tarball-ttl`,
 `flake-registry`, `use-registries`, `access-tokens`, `allow-dirty`, `warn-dirty`,
 `max-call-depth`, `eval-cores` (see below), and its own `polyglot` (default `true`; `--option
-polyglot false` removes the polyglot builtins and foreign `import`, so that `builtins` looks like
-CppNix's).
+polyglot false` removes the polyglot builtins, `builtins.pkl` and foreign `import` (including
+of `.pkl` files), so that `builtins` looks like CppNix's).
 
 The REPL follows `nix repl`: `x = expr` bindings, `:l <nixpkgs>`, `:lf FLAKEREF`, `:r`,
 `:a`, `:p`, `:t`, tab completion of attribute paths, multi-line input, Ctrl-C to interrupt, and
@@ -173,6 +173,71 @@ over it. See `examples/polyglot.nix` (Nix ⇄ JS) and `examples/Embed.java` (Jav
 ```sh
 java -cp "target/classes:$(cat target/classpath.txt)" examples/Embed.java
 ```
+
+## Pkl
+
+[Pkl](https://pkl-lang.org) is a configuration language with classes, type constraints,
+defaults, and late binding, and it runs on Truffle too: nix-truffle embeds it (pkl-core, through
+its Java API) on the JVM. Three directions work (see `examples/pkl`, `tests/pkl.sh`):
+
+- **Typed configuration in Nix**: `import ./config.pkl` evaluates a Pkl module to a Nix value.
+- **Nix data checked and completed by Pkl types**: `builtins.pkl` amends a Pkl module with Nix
+  values. Pkl checks them against the module's types and constraints, fills in the defaults, and
+  recomputes what depends on them; with `output = true`, it returns the module's rendered output
+  (YAML, JSON, plist, XML, properties, ...), for typed configuration files:
+
+  ```nix
+  builtins.pkl {
+    module = ./services.pkl;
+    amend.services = [ { name = "web"; port = 443; } { name = "api"; } ];
+  }
+  # { domain = "example.org"; services = [ { name = "web"; port = 443; restart = "on-failure"; ... } ... ];
+  #   urls = [ "https://web.example.org:443" "https://api.example.org:8080" ]; }
+  ```
+
+  A value that doesn't fit is an error, in Pkl's words:
+
+  ```
+  error: Pkl: Type constraint `matches(Regex("[a-z][a-z0-9-]*"))` violated.
+  Value: "Web!"
+  ...
+  error: Pkl: Cannot find property `prot` in object of type `services#Service`.
+  ...
+  Did you mean any of the following?
+  port
+  ```
+
+- **Pkl using nixpkgs**: `nix:` URIs in Pkl go into the `nix` attribute set given to
+  `builtins.pkl { ...; nix = { inherit pkgs; }; }`. `import "nix:pkgs" as pkgs` is a module with
+  a property per attribute, each `import("nix:pkgs.NAME").value`, which Pkl evaluates (and Nix
+  with it) only when it is used, so `pkgs.hello.version` evaluates `hello` and nothing else.
+  `read("nix:pkgs.hello")` is a value as text: a derivation's output path, JSON for sets and lists.
+  Store paths that come back to Nix keep their string context, so derivations that use them
+  depend on the right derivations.
+
+`builtins.pkl` takes `module` (a path) or `text`, and optionally `amend` (with `module`),
+`expression` (evaluated in the module instead of the whole module), `output`, and `nix`. Values:
+
+| Pkl | Nix | | Nix | Pkl (as the property's type has it) |
+|---|---|---|---|---|
+| objects, `Mapping`, `Map` | attribute sets | | attribute sets | `new { name = ... }`, `new { ["key"] = ... }`, `Map(...)` |
+| `Listing`, `List`, `Set` | lists | | lists | `new { ... }`, `List(...)`, `Set(...)` |
+| `Dynamic` with only elements | a list | | derivations, paths | strings (the output path, the path) |
+| `Duration`, `DataSize` | `{ value, unit }` | | strings, numbers, booleans, `null` | the same |
+| `Pair` | a two-element list | | functions | an error |
+
+- Pkl evaluates in its own Truffle context; its callbacks into Nix (`nix:`) enter nix-truffle's
+  again. Calls are evaluated on the main thread (workers leave them to it, like other foreign
+  code). The first one in a process takes about half a second (Pkl's standard library); then a
+  call takes milliseconds, and in the daemon an amended module 60 ms.
+- In pure evaluation, the files Pkl reads must be ones Nix could read, and Pkl packages, `https:`
+  and environment variables are off.
+- Pkl's functions can't come back (Pkl doesn't export them: such properties must be `local` or
+  `hidden`), and `nix:` paths are attribute paths, so Pkl can't call Nix functions yet.
+- `amend` assigns every attribute (`name = ...`), replacing the module's default rather than
+  amending it.
+- Native images leave Pkl out: its language needs a native-image configuration of its own.
+  `builtins.pkl` and `.pkl` imports say so there.
 
 ## Strings are bytes
 
@@ -416,7 +481,8 @@ work in progress: 9.5 GB for all seven (8.0 GB with 8 threads), against 7.1 GB o
   needs to instantiate chromium and a NixOS test: derivations, string context,
   `path`/`filterSource`, `toFile`, `placeholder`, `fromTOML`, `fromJSON`/`toJSON`, `toXML`,
   `__curPos`, regexes, `genericClosure`, `compareVersions`, `hashString`/`hashFile`, and so on;
-  the fetchers and flake builtins above; and the rest of CppNix 2.35's builtins
+  the fetchers and flake builtins above; `builtins.pkl` and `.pkl` imports (see Pkl); and the
+  rest of CppNix 2.35's builtins
   (`builtins.attrNames builtins` is the same with `--option polyglot false`).
 - **Regexes** are a port of libstdc++'s `std::regex` (POSIX extended grammar, the NFA and its
   depth-first matcher), since that is what CppNix uses: the same leftmost-first (not
@@ -461,7 +527,7 @@ thunks in it.
 `NIX_CONFIG="eval-cores = 8"` too. `NIX=... tests/parallel.sh` evaluates expressions that
 workers share (cycles, errors, `max-call-depth`) with `eval-cores = 8`, several times each, and
 compares them with CppNix. `tests/repl.sh` drives `nix-truffle repl` (files, flakes, `:l`, `:lf`,
-`:r`). `tests/wasm.sh` tests
+`:r`). `tests/pkl.sh` tests Pkl from Nix. `tests/wasm.sh` tests
 `builtins.wasm`, and with `PLUGINS`, `WASI` and `NIX_WASM_RUST` set runs nix-wasm-rust's test
 suite too.
 

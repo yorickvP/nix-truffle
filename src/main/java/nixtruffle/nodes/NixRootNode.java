@@ -57,10 +57,11 @@ public final class NixRootNode extends RootNode {
         return body.execute(frame);
     }
 
+    /** As Java text (names and file names are Nix byte strings): for tools, and Pkl's stack traces. */
     @Override
     public String getName() {
-        if (name != null) return name;
-        return "thunk@" + section.getSource().getName() + ":" + section.getStartLine() + ":" + section.getStartColumn();
+        if (name != null) return nixtruffle.runtime.Bytes.toJava(name);
+        return "thunk@" + nixtruffle.runtime.Bytes.toJava(section.getSource().getName()) + ":" + section.getStartLine() + ":" + section.getStartColumn();
     }
 
     @Override

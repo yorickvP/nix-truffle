@@ -310,7 +310,9 @@ public final class FileBuiltins {
         if (cached != null) return cached;
         Object result;
         String language = ctx.settings.getBool("polyglot") ? foreignLanguage(file) : null;
-        if (language != null) {
+        if (language != null && language.equals("pkl")) {
+            result = PklEntry.importFile(file);
+        } else if (language != null) {
             Parallel.mainOnly(null, "a foreign import");
             try {
                 var source = com.oracle.truffle.api.source.Source.newBuilder(language, ctx.env.getPublicTruffleFile(Bytes.toJava(file))).build();
@@ -353,6 +355,7 @@ public final class FileBuiltins {
         if (file.endsWith(".js") || file.endsWith(".mjs")) return "js";
         if (file.endsWith(".py")) return "python";
         if (file.endsWith(".rb")) return "ruby";
+        if (file.endsWith(".pkl")) return "pkl";
         return null;
     }
 

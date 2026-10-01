@@ -25,6 +25,24 @@
       <artifactId>truffle-api</artifactId>
       <version>${graalvm.version}</version>
     </dependency>
+    <!-- Pkl (pkl-lang.org), for importing .pkl files and builtins.pkl. Its Truffle language runs
+         on ours: its own Truffle and graal-sdk (25.0, whose org.graalvm.polyglot classes clash
+         with the polyglot artifact's) are left out. -->
+    <dependency>
+      <groupId>org.pkl-lang</groupId>
+      <artifactId>pkl-core</artifactId>
+      <version>0.32.1</version>
+      <exclusions>
+        <exclusion>
+          <groupId>org.graalvm.truffle</groupId>
+          <artifactId>truffle-api</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.graalvm.sdk</groupId>
+          <artifactId>graal-sdk</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
     <!-- Fetchers: tar/zip archives and their compression formats. -->
     <dependency>
       <groupId>org.apache.commons</groupId>

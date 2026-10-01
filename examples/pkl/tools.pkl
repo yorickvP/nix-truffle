@@ -1,0 +1,21 @@
+// Pkl reading nixpkgs: `nix:` URIs go into the `nix` attribute set given to builtins.pkl. A
+// module imported from `nix:` is evaluated lazily, attribute by attribute.
+import "nix:pkgs" as pkgs
+
+class Tool {
+  name: String
+  version: String
+  /// A store path: back in Nix, it carries its derivation as string context.
+  bin: String
+}
+
+local function tool(p): Tool = new {
+  name = p.pname
+  version = p.version
+  bin = "\(p.outPath)/bin/\(p.pname)"
+}
+
+tools: Listing<Tool> = new {
+  tool(pkgs.hello)
+  tool(pkgs.jq)
+}
