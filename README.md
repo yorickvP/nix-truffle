@@ -58,17 +58,20 @@ Settings come from `nix.conf` (`$NIX_CONF_DIR`, `$XDG_CONFIG_DIRS`, `$XDG_CONFIG
 `$NIX_CONFIG`, and `--option NAME VALUE` / `--NAME VALUE` / `--extra-experimental-features`,
 as in Nix. The ones nix-truffle uses: `experimental-features` (`flakes` enables `getFlake`,
 `fetchTree` on URLs and the other flake builtins), `pure-eval`, `nix-path`, `tarball-ttl`,
-`flake-registry`, `use-registries`, `access-tokens`, `allow-dirty`, `warn-dirty`, and its own
-`polyglot` (default `true`; `--option polyglot false` removes the polyglot builtins and
-foreign `import`, so that `builtins` looks like CppNix's).
+`flake-registry`, `use-registries`, `access-tokens`, `allow-dirty`, `warn-dirty`,
+`max-call-depth`, and its own `polyglot` (default `true`; `--option polyglot false` removes the
+polyglot builtins and foreign `import`, so that `builtins` looks like CppNix's).
 
 The REPL follows `nix repl`: `x = expr` bindings, `:l <nixpkgs>`, `:a`, `:p`, `:t`,
 tab completion of attribute paths, multi-line input, Ctrl-C to interrupt, and errors
 shown inline (`d = «error: oops»;`).
 
-Evaluation runs on a thread with a 128 MB stack (`NIX_TRUFFLE_JAVA_OPTS=-Dnixtruffle.stackMb=N`).
-That allows recursion around 500k deep. Lix stops at 10k (`max-call-depth`).
-Runaway recursion takes about 15 s to fail, because every GC scans the deep stack.
+Like CppNix, calls may only nest `max-call-depth` (10000) deep: "stack overflow; max-call-depth
+exceeded", which `tryEval` doesn't catch. It counts what CppNix counts (calls, the primops
+behind `- * / <`, and the recursion of `==`, `deepSeq`, `toJSON` and string coercion), so the
+same recursions fail, and runaway recursion fails in half a second. Evaluation runs on a
+thread with a 128 MB stack (`NIX_TRUFFLE_JAVA_OPTS=-Dnixtruffle.stackMb=N`), for deep chains
+of thunks, which don't count.
 
 ## How laziness works
 
@@ -266,7 +269,11 @@ shows in code that calls a Wasm function very often.
 ## Speed: the daemon and native images
 
 Most of a one-off run is warm-up. HotSpot is compiling the interpreter itself, then Truffle
-is compiling nixpkgs, and both are thrown away when the process exits. The language uses
+is compiling nixpkgs, and both are thrown away when the process exits. Very little of the code
+runs often: a NixOS evaluation makes 490k thunk and lambda bodies, of which 20% ever run and
+1.5k get compiled. So the translator only checks bodies for errors at first, and builds them
+when they first run (`nodes/LazyCode.java`). And `bin/nix-truffle` uses compact object headers,
+which take a third off the memory of a large evaluation. The language uses
 `ContextPolicy.SHARED`, so parsed and compiled code can be shared by all contexts of an engine:
 code depends on a context only through its `GlobalScope` (the names in its base environment),
 and `NixLanguage` keeps parsed files by path and contents. Two things build on that.
@@ -381,8 +388,8 @@ cargo test
 
 | benchmark | nix-instantiate | nix-truffle, one run incl. JVM start | nix-truffle warm |
 |---|---|---|---|
-| `fib.nix` (fib 32, one thunk per call) | 0.61 s | 0.62 s | 63 ms |
-| `lazy.nix` (lazy prime stream, attrset fixpoint) | 0.47 s | 0.70 s | ~100–165 ms |
+| `fib.nix` (fib 32, one thunk per call) | 0.59 s | 0.73 s | 84 ms |
+| `lazy.nix` (lazy prime stream, attrset fixpoint) | 0.48 s | 0.80 s | 95 ms |
 
 ## Layout
 
