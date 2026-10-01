@@ -119,6 +119,11 @@
           };
         });
 
+      # NixOS configurations in Pkl (nixos/pkl.nix): `schema options` is the Pkl schema of a
+      # configuration's options (plain Nix), `module ./host.pkl` a NixOS module from a Pkl file that
+      # amends it (needs nix-truffle's builtins.pkl).
+      lib.nixosPkl = import ./nixos/pkl.nix { inherit (nixpkgs) lib; };
+
       checks = forAllSystems (pkgs:
         let nix-truffle = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
         in {

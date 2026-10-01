@@ -68,5 +68,21 @@ check "pure evaluation" "error: Pkl: access to absolute path '/etc/hostname' is 
   'builtins.pkl { text = "x = read(\"file:///etc/hostname\")"; }' --option pure-eval true
 check "polyglot off" 'false' 'builtins ? pkl' --option polyglot false
 
+# With NIXPKGS (a nixpkgs path): a NixOS system in Pkl (examples/pkl/nixos) is the same as in Nix,
+# and Pkl checks it against the options' types.
+if [[ -n "${NIXPKGS:-}" ]]; then
+  example="$root/examples/pkl/nixos"
+  NIX_TRUFFLE_DAEMON=0 "$truffle" eval --raw -I "nixpkgs=$NIXPKGS" --file "$example/schema.nix" > "$example/nixos.pkl"
+  systems="$(NIX_TRUFFLE_DAEMON=0 timeout 300 "$truffle" -I "nixpkgs=$NIXPKGS" --strict "$example" 2>&1)"
+  if [[ "$systems" =~ fromNix\ =\ (\"[^\"]*\").*fromPkl\ =\ (\"[^\"]*\") && "${BASH_REMATCH[1]}" == "${BASH_REMATCH[2]}" ]]; then
+    passed=$((passed + 1))
+  else
+    failed=$((failed + 1))
+    printf 'FAIL NixOS in Pkl\n  got: %s\n' "$systems"
+  fi
+  printf 'amends "%s"\nservices { openssh { enabel = true } }\n' "$example/nixos.pkl" > typo.pkl
+  check "NixOS option typo" 'error: Pkl: Cannot find property `enabel` in object of type `nixos#O_services_openssh`.' 'builtins.pkl { module = ./typo.pkl; }'
+fi
+
 echo "$passed passed, $failed failed"
 ((failed == 0))

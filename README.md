@@ -239,6 +239,45 @@ its Java API) on the JVM. Three directions work (see `examples/pkl`, `tests/pkl.
 - Native images leave Pkl out: its language needs a native-image configuration of its own.
   `builtins.pkl` and `.pkl` imports say so there.
 
+### NixOS configurations in Pkl
+
+`nixos/pkl.nix` (the flake's `lib.nixosPkl`) writes a NixOS configuration's options as a Pkl
+schema, and makes a NixOS module of a Pkl file that amends it (`examples/pkl/nixos`):
+
+```pkl
+amends "nixos.pkl"
+
+networking { hostName = "pkl-demo"; firewall { allowedTCPPorts { 22; 80; 443 } } }
+users { users { ["alice"] { isNormalUser = true; extraGroups { "wheel" } } } }
+environment { systemPackages { "htop"; "git"; "python3Packages.requests" } }
+services { openssh { enable = true; settings { PermitRootLogin = "no" } } }
+```
+
+```nix
+nixosSystem { modules = [ (nix-truffle.lib.nixosPkl.module ./host.pkl) ]; }
+```
+
+- `schema options` (plain Nix: any Nix runs it, Lix and nix-truffle give the same 3 MB for
+  NixOS's 17k options) makes a property of every option, with its description as doc comment, and
+  a class of every set of options and submodule. Types follow the options':
+  - `bool`, `str`, `int` and ints with bounds (ports: `Int(isBetween(0, 65535))`), `float`;
+  - string enums as unions of literals, other enums as a constraint;
+  - `listOf` as `Listing`, `attrsOf` as `Mapping`, `nullOr`, `either` and `coercedTo` as unions;
+  - packages as attribute paths in pkgs (`"python3Packages.requests"`);
+  - freeform submodules (`settings`) and whole configurations (`virtualisation.vmVariant`) as
+    `Dynamic`, anything else as `Any`; function-typed options aren't in it.
+- An option that isn't set is null (or an empty listing, mapping or object), and `module` makes
+  definitions of the others, so the system is the one the same definitions in Nix make: the
+  example's `toplevel.drvPath` is the same as `host.nix`'s.
+- Pkl checks the configuration before Nix sees it: a misspelled option (`enabel`, "did you mean
+  `enable`"), a string for a port, `splashMode = "zoom"` (`"normal"|"stretch"`), port 70000. With
+  the schema, Pkl's editor plugins complete and document the options, and `pkl eval host.pkl`
+  checks a configuration without Nix.
+- Generate the schema from your configuration without its Pkl module: some option types depend
+  on the configuration, and evaluating them evaluates the Pkl file, which needs the schema.
+- Not expressible this way: unsetting a default to an empty list or to null (unset means "no
+  definition"), `mkForce` and other priorities, and Nix values in the configuration (it's data).
+
 ## Strings are bytes
 
 Nix strings are byte strings, not text: `stringLength "é"` is 2, `substring 0 1 "é"` is the

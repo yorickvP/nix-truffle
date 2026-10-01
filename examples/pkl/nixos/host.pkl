@@ -1,0 +1,31 @@
+// A NixOS system in Pkl: the same one as host.nix (see default.nix).
+amends "nixos.pkl"
+
+networking {
+  hostName = "pkl-demo"
+  firewall { allowedTCPPorts { 22; 80; 443 } }
+}
+time { timeZone = "Europe/Amsterdam" }
+users {
+  users {
+    ["alice"] {
+      isNormalUser = true
+      description = "Alice"
+      extraGroups { "wheel"; "networkmanager" }
+    }
+  }
+}
+environment { systemPackages { "htop"; "git"; "python3Packages.requests" } }
+services {
+  openssh {
+    enable = true
+    settings { PermitRootLogin = "no"; PasswordAuthentication = false }
+  }
+  nginx {
+    enable = true
+    virtualHosts { ["example.org"] { root = "/var/www" } }
+  }
+}
+fileSystems { ["/"] { device = "/dev/sda1"; fsType = "ext4" } }
+boot { loader { grub { device = "/dev/sda" } } }
+system { stateVersion = "25.11" }

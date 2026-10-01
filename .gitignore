@@ -1,3 +1,4 @@
 target/
 result
 result-*
+examples/pkl/nixos/nixos.pkl
