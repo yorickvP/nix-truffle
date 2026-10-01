@@ -1,0 +1,32 @@
+let s = builtins.foldl' (a: b: a + b) 0 (builtins.genList (x: x) 200000); in builtins.listToAttrs (builtins.genList (i: { name = "a${toString i}"; value = s + i; }) 16)
+rec { a = b + 1; b = c + 1; c = d + 1; d = e + 1; e = f + 1; f = g + 1; g = 1; }
+rec { a = b; b = a; c = 1; d = 2; }
+let x = { a = x.b; b = x.c; c = x.a; d = 1; }; in x
+let f = n: if n == 0 then [] else [ (f (n - 1)) ]; in { a = f 3; b = f 4; c = f 5; d = f 6; }
+{ a = 1; b = throw "b failed"; c = throw "c failed"; d = 4; }
+{ a = builtins.trace "trace a" 1; b = 2; c = builtins.trace "trace c" 3; }
+let f = n: if n == 0 then 0 else 1 + f (n - 1); in { a = f 9990; b = f 9999; c = f 10000; d = f 5; }
+let xs = builtins.genList (i: { v = i; }) 50; in map (x: x.v * 2) xs
+let big = builtins.genList (i: i) 100000; in { a = builtins.length big; b = builtins.elemAt big 5; c = builtins.foldl' builtins.add 0 big; d = builtins.head big; }
+let x = { a = x.b; b = 1; c = x.a; }; in x
+{ a = let y = { p = y.q; q = y.p; }; in y.p; b = 2; }
+builtins.length (builtins.concatLists [ [1] (throw "x") [2] (throw "y") ])
+builtins.length (builtins.filter (x: x > 2) [ 1 2 (throw "a") 3 (throw "b") ])
+builtins.length (builtins.concatMap (x: if x == 3 then throw "three" else if x == 5 then throw "five" else [x]) (builtins.genList (i: i) 10))
+let x = { a = builtins.concatLists [ x.b [1] ]; b = builtins.concatLists [ [2] x.a ]; }; in builtins.length x.a
+let f = n: if n == 0 then true else f (n - 1); in builtins.length (builtins.filter (n: f n) [ 5 9990 9995 9997 10000 5 ])
+let f = n: if n == 0 then true else f (n - 1); in builtins.length (builtins.filter (n: f n) [ 5 9990 9994 5 ])
+(derivation { name = "a"; system = "x"; builder = "/b"; deps = map (i: derivation { name = "d${toString i}"; system = "x"; builder = "/b"; }) (builtins.genList (i: i) 20); }).drvPath
+builtins.length (builtins.filter (x: (builtins.tryEval x).success) [ 1 (throw "a") 2 (assert false; 3) ])
+let f = n: if n == 0 then [] else builtins.concatLists [ (f (n - 1)) [n] ]; in builtins.length (f 3000)
+let f = n: if n == 0 then [] else builtins.concatLists [ (f (n - 1)) [n] ]; in builtins.length (f 6000)
+builtins.length (builtins.filter (x: builtins.trace "t${toString x}" true) [1 2 3])
+(builtins.partition (x: if x == 4 then throw "four" else x > 2) [ 1 2 3 4 5 ]).right
+builtins.attrNames (builtins.groupBy (x: if x == 7 then abort "seven" else toString (x - x / 2 * 2)) (builtins.genList (i: i) 10))
+builtins.concatStringsSep "," (map (x: if x == 2 then throw "two" else toString x) [ 1 2 3 ])
+builtins.sort builtins.lessThan [ 3 (throw "s1") 1 (throw "s2") ]
+let s = builtins.foldl' (a: b: a + b) 0 (builtins.genList (x: x) 300000); in builtins.length (builtins.filter (x: x == s) (builtins.genList (i: s + i - 3) 8))
+builtins.listToAttrs [ { name = "a"; value = 1; } (throw "l1") { name = "b"; value = 2; } (throw "l2") ]
+let x = builtins.filter (y: y == builtins.length x) [ 1 2 3 ]; in x
+toString [ 1 (throw "c1") 2 ]
+builtins.catAttrs "a" [ { a = 1; } (throw "cat") { a = 2; } ]

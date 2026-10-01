@@ -420,7 +420,10 @@ implementations. `bench/heap.sh EXPR` shows the live heap after an evaluation, b
 `builtins.getFlake`, a NixOS configuration's values stay alive).
 
 `NIX=/path/to/cppnix/bin/nix tests/eval-cli.sh` compares `nix-truffle eval` with CppNix's
-`nix eval` (see above; `NIXPKGS=1` adds cases that fetch nixpkgs). `tests/wasm.sh` tests
+`nix eval` (see above; `NIXPKGS=1` adds cases that fetch nixpkgs); run it with
+`NIX_CONFIG="eval-cores = 8"` too. `NIX=... tests/parallel.sh` evaluates expressions that
+workers share (cycles, errors, `max-call-depth`) with `eval-cores = 8`, several times each, and
+compares them with CppNix. `tests/wasm.sh` tests
 `builtins.wasm`, and with `PLUGINS`, `WASI` and `NIX_WASM_RUST` set runs nix-wasm-rust's test
 suite too.
 
