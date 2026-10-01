@@ -16,17 +16,23 @@
     in {
       packages = forAllSystems (pkgs:
         let
+          lib = pkgs.lib;
+          system = pkgs.stdenv.hostPlatform.system;
           graalvm = pkgs.graalvmPackages.graalvm-ce;
+          # Oracle GraalVM is under the GraalVM Free Terms and Conditions (unfree in nixpkgs): allowed
+          # here for the native-oracle package only.
+          graalvm-oracle = (import nixpkgs {
+            inherit system;
+            config.allowUnfreePredicate = p: lib.getName p == "graalvm-oracle";
+          }).graalvmPackages.graalvm-oracle;
 
           # On the JVM (GraalVM's, for the Truffle compiler): bin/nix-truffle, which also runs the
-          # daemon (NIX_TRUFFLE_DAEMON=1), with the jars in share/nix-truffle.
-          nix-truffle = pkgs.maven.buildMavenPackage {
-            pname = "nix-truffle";
-            inherit version src;
+          # daemon (NIX_TRUFFLE_DAEMON=1), with the jars in share/nix-truffle. `profile` picks
+          # the Truffle runtime in pom.xml, to match `jdk`.
+          jvm = { pname, jdk, profile, mvnHash }: pkgs.maven.buildMavenPackage {
+            inherit pname version src mvnHash;
             mvnJdk = graalvm;
-            # The Maven dependencies and plugins: when pom.xml changes them, set this to
-            # lib.fakeHash and take the hash from the error.
-            mvnHash = "sha256-RUvksHiSRcMzlQj7fdFMNHOdzU63MeAtVdM1T7TC04c=";
+            mvnParameters = "-P${profile}";
             doCheck = false;
             nativeBuildInputs = [ pkgs.makeWrapper ];
 
@@ -44,39 +50,73 @@
               done | paste -sd: > $share/classpath
               cp bin/nix-truffle $out/bin/
               wrapProgram $out/bin/nix-truffle \
-                --set-default NIX_TRUFFLE_JAVA ${graalvm}/bin/java \
-                --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.coreutils ]}
+                --set-default NIX_TRUFFLE_JAVA ${jdk}/bin/java \
+                --prefix PATH : ${lib.makeBinPath [ pkgs.coreutils ]}
               runHook postInstall
             '';
 
             meta = {
               description = "A Nix evaluator on GraalVM's Truffle";
               mainProgram = "nix-truffle";
-              platforms = pkgs.lib.platforms.unix;
+              platforms = lib.platforms.unix;
             };
           };
 
-          # A native executable (bin/build-native): starts in milliseconds, but GraalVM CE's native
-          # images only have the serial collector, which makes large evaluations slow.
-          native = pkgs.stdenv.mkDerivation {
-            pname = "nix-truffle-native";
-            inherit version src;
-            nativeBuildInputs = [ graalvm ];
+          # A native executable of a JVM package's jars (bin/build-native).
+          native = { pname, jars, jdk, flags ? [ ], description }: pkgs.stdenv.mkDerivation {
+            inherit pname version src;
+            nativeBuildInputs = [ jdk ];
             buildPhase = ''
               runHook preBuild
               export HOME=$TMPDIR
               mkdir -p $out/bin
-              NIX_TRUFFLE_CLASSPATH="${nix-truffle}/share/nix-truffle/nix-truffle.jar:$(cat ${nix-truffle}/share/nix-truffle/classpath)" \
+              NIX_TRUFFLE_CLASSPATH="${jars}/share/nix-truffle/nix-truffle.jar:$(cat ${jars}/share/nix-truffle/classpath)" \
                 NIX_TRUFFLE_NATIVE_OUT=$out/bin/nix-truffle \
-                bash bin/build-native -J-Xmx16g
+                bash bin/build-native -J-Xmx16g ${lib.escapeShellArgs flags}
               runHook postBuild
             '';
             dontInstall = true;
-            meta = nix-truffle.meta // { description = "A Nix evaluator on GraalVM's Truffle (native executable)"; };
+            meta = jars.meta // { inherit description; };
+          };
+
+          # The Maven dependencies and plugins (mvnHash): when pom.xml changes them, set it to
+          # lib.fakeHash and take the hash from the error.
+          nix-truffle = jvm {
+            pname = "nix-truffle";
+            jdk = graalvm;
+            profile = "community";
+            mvnHash = "sha256-RUvksHiSRcMzlQj7fdFMNHOdzU63MeAtVdM1T7TC04c=";
           };
         in {
-          inherit nix-truffle native;
+          inherit nix-truffle;
           default = nix-truffle;
+          # Starts in milliseconds, but GraalVM CE's native images only have the serial
+          # collector, which makes large evaluations slow.
+          native = native {
+            pname = "nix-truffle-native";
+            jars = nix-truffle;
+            jdk = graalvm;
+            description = "A Nix evaluator on GraalVM's Truffle (native executable)";
+          };
+        } // lib.optionalAttrs (pkgs.stdenv.hostPlatform.isLinux && lib.meta.availableOn pkgs.stdenv.hostPlatform graalvm-oracle) {
+          # Oracle GraalVM's native image has G1 (on Linux), which collects big heaps in parallel.
+          # Its defaults here: the heap may grow to three quarters of the memory but at most 30 GB
+          # (as bin/nix-truffle's), and G1 may take up to half the time and promote survivors
+          # after one collection (with its own defaults, a NixOS evaluation takes three times the
+          # memory, and is 3% faster).
+          native-oracle = native {
+            pname = "nix-truffle-native-oracle";
+            jars = jvm {
+              pname = "nix-truffle-oracle";
+              jdk = graalvm-oracle;
+              profile = "oracle";
+              mvnHash = "sha256-Yyyl6orngZloPb1X2XmGVhcqdGlJUbb2sSPVcgoqafo=";
+            };
+            jdk = graalvm-oracle;
+            flags = [ "--gc=G1" "-R:MaxRAMPercentage=75" "-R:ErgoHeapSizeLimit=${toString (30 * 1024 * 1024 * 1024)}"
+              "-R:GCTimeRatio=1" "-R:MaxTenuringThreshold=1" ];
+            description = "A Nix evaluator on GraalVM's Truffle (native executable, Oracle GraalVM with G1)";
+          };
         });
 
       checks = forAllSystems (pkgs:

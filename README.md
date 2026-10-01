@@ -39,6 +39,9 @@ $ bin/nix-truffle examples/polyglot.nix
 nix run github:yorickvp/nix-truffle -- eval nixpkgs#hello.name   # or: nix profile install ...
 nix build .#default    # bin/nix-truffle on GraalVM CE (with the daemon, see below)
 nix build .#native     # a native executable (see below: fast to start, slow on big evaluations)
+nix build .#native-oracle  # the same with Oracle GraalVM's G1 (Linux; Oracle GraalVM is under
+                       # the GraalVM Free Terms and Conditions, unfree in nixpkgs: the flake allows
+                       # it for this package)
 nix flake check        # builds the package and runs a few commands
 ```
 
@@ -328,18 +331,18 @@ configuration is in `src/main/resources/META-INF/native-image`, with metadata re
 tracing agent while running the tests. A native image starts in milliseconds.
 - GraalVM CE's native images only have the serial GC, which copies the live set of a big
   evaluation single-threaded, again and again. So they suit small evaluations only.
-- Oracle GraalVM adds G1 (`--gc=G1`) and profile-guided optimization: build with
-  `--pgo-instrument`, run a few evaluations with `-XX:ProfilesDumpFile=F.iprof`, then build
-  with `--pgo=F.iprof,...`.
+- Oracle GraalVM adds G1 (`--gc=G1`, on Linux), which the flake's `native-oracle` package uses,
+  and profile-guided optimization: build with `--pgo-instrument`, run a few evaluations with
+  `-XX:ProfilesDumpFile=F.iprof`, then build with `--pgo=F.iprof,...`.
 - Oracle GraalVM also has auxiliary engine caching, which saves parsed and compiled code to a
   file. It needs the serial GC:
   - build with `-H:+AuxiliaryEngineCache`;
   - store with `-Dpolyglot.engine.AllowExperimentalOptions=true -Dpolyglot.engine.CacheStore=F`;
   - load with the same flags with `CacheLoad=F`, plus `-XX:AuxiliaryImageBytes=N`, where N is at
     least the size of F.
-- Oracle GraalVM 25.0 needs the Truffle 25.0 artifacts (`mvn -Dgraalvm.version=25.0.4`, and
-  `org.graalvm.truffle:truffle-enterprise` instead of `truffle-runtime`). The pom's 25.3 ones
-  need GraalVM CE 25.3.
+- Oracle GraalVM 25.0 needs the Truffle artifacts of its version, and `truffle-enterprise`
+  instead of `truffle-runtime`: `mvn -Poracle` (25.0.3, nixpkgs' `graalvm-oracle`). The default
+  profile's 25.3 ones need GraalVM CE 25.3.
 
 On this machine (32 cores):
 
@@ -348,8 +351,8 @@ On this machine (32 cores):
 | Lix 2.94 | 0.02 s | 0.22 s | 2.5 s | 12.6 s |
 | JVM, one run (GraalVM CE 25.3) | 0.30 s | 1.0 s | 3.2 s | 4.7 s |
 | daemon, warm | 0.065 s | 0.26 s | 1.6–2.0 s | 2.7 s, also after an edit |
-| native, GraalVM CE (serial GC) | 0.005 s | 0.53 s | 11 s | |
-| native, Oracle GraalVM, G1 + PGO | 0.012 s | 0.48 s | 4.55 s | 14 s |
+| native, GraalVM CE (serial GC, `.#native`) | 0.005 s | 0.53 s | 11 s | 20 s |
+| native, Oracle GraalVM, G1 (`.#native-oracle`) | 0.010 s | 0.56 s | 2.8 s | 6.1 s |
 | native, Oracle GraalVM, serial GC + engine cache of `hello` | | 0.44 s | | |
 
 On the JVM, Oracle GraalVM's compiler makes no difference to one run (1.06 s and 4.5 s): what
