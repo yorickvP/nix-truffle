@@ -11,8 +11,9 @@ fi
 java=java
 [[ -n "${JAVA_HOME:-}" ]] && java="$JAVA_HOME/bin/java"
 java="$(command -v "$java" || echo "$java")"
+# Compact object headers (8 instead of 12 bytes) take a third off the memory of large evaluations.
 jvm=(--enable-native-access=ALL-UNNAMED --sun-misc-unsafe-memory-access=allow -Dpolyglot.engine.WarnInterpreterOnly=true
-  ${NIX_TRUFFLE_JAVA_OPTS:-})
+  -XX:+UseCompactObjectHeaders ${NIX_TRUFFLE_JAVA_OPTS:-})
 cp="$root/target/classes:$(cat "$root/target/classpath.txt")"
 if [[ "${NIX_TRUFFLE_DAEMON:-}" == 1 ]]; then
   # The client is a small JVM that only relays: no JIT beyond C1, the smallest GC.
