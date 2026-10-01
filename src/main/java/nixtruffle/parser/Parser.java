@@ -118,7 +118,7 @@ public final class Parser {
         if (isIdStart(c)) {
             int q = p + 1;
             while (q < n && isIdChar(src.charAt(q))) q++;
-            String id = src.substring(p, q);
+            String id = name(src.substring(p, q));
             return new Tok(KEYWORDS.getOrDefault(id, T.ID), id, p, q);
         }
         if (c == '"') return new Tok(T.STR_OPEN, "\"", p, p + 1);
@@ -522,6 +522,18 @@ public final class Parser {
         return path;
     }
 
+    /**
+     * Identifiers and attribute names, one string each for all files: function bodies are
+     * translated when they first run, so their syntax trees stay, and a NixOS evaluation's would
+     * otherwise hold a million and a half copies of a few thousand names.
+     */
+    private static final java.util.concurrent.ConcurrentHashMap<String, String> NAMES = new java.util.concurrent.ConcurrentHashMap<>();
+
+    static String name(String s) {
+        String n = NAMES.putIfAbsent(s, s);
+        return n != null ? n : s;
+    }
+
     private AttrKey parseAttr() {
         Tok t = cur;
         switch (t.type) {
@@ -531,7 +543,7 @@ public final class Parser {
             }
             case STR_OPEN -> {
                 Str s = parseString();
-                return s.isLiteral() ? AttrKey.of(s.literal()) : new AttrKey(null, s);
+                return s.isLiteral() ? AttrKey.of(name(s.literal())) : new AttrKey(null, s);
             }
             case DOLLAR_CURLY -> {
                 advance();

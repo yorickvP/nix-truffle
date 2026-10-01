@@ -29,6 +29,7 @@ public final class NixRootNode extends RootNode {
     private final int envSize;
     /** A file's top level, called without arguments (or the REPL scope). */
     private final boolean file;
+    /** Null for a thunk: {@link #getName} makes {@code thunk@file:line:column} when asked. */
     private final String name;
     private final SourceSection section;
 
@@ -57,7 +58,10 @@ public final class NixRootNode extends RootNode {
     }
 
     @Override
-    public String getName() { return name; }
+    public String getName() {
+        if (name != null) return name;
+        return "thunk@" + section.getSource().getName() + ":" + section.getStartLine() + ":" + section.getStartColumn();
+    }
 
     @Override
     public SourceSection getSourceSection() { return section; }
@@ -66,5 +70,5 @@ public final class NixRootNode extends RootNode {
     public boolean isCloningAllowed() { return true; }
 
     @Override
-    public String toString() { return name; }
+    public String toString() { return getName(); }
 }

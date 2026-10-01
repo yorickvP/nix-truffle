@@ -11,7 +11,8 @@ import java.util.TreeSet;
 /**
  * Randomized checks of NixAttrs (see tests/attrs.sh): {@code //} against a plain merge of the two
  * sorted key arrays (keys, values and positions, for all kinds of sizes, shared key arrays and
- * missing positions), and lookups (hashed for big sets) against binary search.
+ * missing positions), also along chains of updates and {@code removeAttrs} (whose results take
+ * their positions from the previous ones), and lookups (hashed for big sets) against binary search.
  */
 public class AttrsCheck {
     static final Source SOURCE = Source.newBuilder("nix", "x".repeat(10000), "f").build();
@@ -19,6 +20,7 @@ public class AttrsCheck {
     public static void main(String[] args) {
         long seed = args.length > 0 ? Long.parseLong(args[0]) : 42;
         update(new Random(seed), 300_000);
+        chains(new Random(seed), 20_000);
         lookups(new Random(seed), 2000);
     }
 
@@ -28,22 +30,63 @@ public class AttrsCheck {
         if (a.keys.length == 0) return b;
         String[] k = new String[a.keys.length + b.keys.length];
         Object[] v = new Object[k.length];
-        Object[] p = a.positions == null && b.positions == null ? null : new Object[k.length];
+        Object[] p = new Object[k.length];
         int i = 0, j = 0, o = 0;
         while (i < a.keys.length || j < b.keys.length) {
             int c = i == a.keys.length ? 1 : j == b.keys.length ? -1 : a.keys[i].compareTo(b.keys[j]);
             if (c < 0) {
                 k[o] = a.keys[i];
-                if (p != null) p[o] = a.positions == null ? null : a.positions[i];
+                p[o] = a.pos(i);
                 v[o++] = a.values[i++];
             } else {
                 if (c == 0) i++;
                 k[o] = b.keys[j];
-                if (p != null) p[o] = b.positions == null ? null : b.positions[j];
+                p[o] = b.pos(j);
                 v[o++] = b.values[j++];
             }
         }
-        return new NixAttrs(Arrays.copyOf(k, o), Arrays.copyOf(v, o), p == null ? null : Arrays.copyOf(p, o));
+        return new NixAttrs(Arrays.copyOf(k, o), Arrays.copyOf(v, o), Arrays.copyOf(p, o));
+    }
+
+    /**
+     * Chains of updates on either side (mostly a few attributes against a big set, as overlays
+     * do) and removals, each result checked against the plain merge of the plain previous one.
+     */
+    static void chains(Random r, int cases) {
+        long steps = 0;
+        for (int t = 0; t < cases; t++) {
+            NixAttrs got = random(r, 40, "s", null), want = got;
+            int length = 1 + r.nextInt(30);
+            for (int s = 0; s < length; s++, steps++) {
+                String tag = "c" + s;
+                int kind = r.nextInt(10);
+                if (kind == 0 && got.keys.length > 0) {
+                    java.util.Set<String> names = new java.util.HashSet<>();
+                    for (int i = r.nextInt(4); i >= 0; i--) names.add(got.keys[r.nextInt(got.keys.length)]);
+                    got = got.without(names);
+                    want = plainWithout(want, names);
+                } else {
+                    NixAttrs b = random(r, kind < 6 ? 3 : 40, tag, got.keys);
+                    boolean left = kind % 2 == 0;
+                    got = left ? got.update(b) : b.update(got);
+                    want = left ? merge(want, b) : merge(b, want);
+                }
+                if (!contents(want).equals(contents(got))) fail("step " + s + " of a chain\n  want " + contents(want) + "\n  got  " + contents(got));
+            }
+        }
+        System.out.println(steps + " steps of random chains agree");
+    }
+
+    static NixAttrs plainWithout(NixAttrs a, java.util.Set<String> names) {
+        List<String> k = new ArrayList<>();
+        List<Object> v = new ArrayList<>(), p = new ArrayList<>();
+        for (int i = 0; i < a.keys.length; i++) {
+            if (names.contains(a.keys[i])) continue;
+            k.add(a.keys[i]);
+            v.add(a.values[i]);
+            p.add(a.pos(i));
+        }
+        return new NixAttrs(k.toArray(new String[0]), v.toArray(), p.toArray());
     }
 
     static void update(Random r, int cases) {
@@ -106,7 +149,7 @@ public class AttrsCheck {
 
     static List<Object> contents(NixAttrs a) {
         List<Object> out = new ArrayList<>();
-        for (int i = 0; i < a.keys.length; i++) out.add(List.of(a.keys[i], a.values[i], String.valueOf(a.positions == null ? null : a.positions[i])));
+        for (int i = 0; i < a.keys.length; i++) out.add(List.of(a.keys[i], a.values[i], String.valueOf(a.pos(i))));
         return out;
     }
 

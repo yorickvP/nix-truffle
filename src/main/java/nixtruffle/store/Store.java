@@ -38,9 +38,12 @@ public final class Store {
         public SortedSet<String> references() { return new TreeSet<>(); }
     }
 
-    public record Drv(Derivation drv, String contents) implements Entry {
-        public SortedSet<String> references() { return drv.references(); }
-    }
+    /**
+     * A derivation: only its name, ATerm and references stay, and {@link #derivation} parses it
+     * again when asked (a NixOS evaluation makes thousands, each with an environment of dozens of
+     * strings that its ATerm holds too).
+     */
+    public record Drv(String name, String contents, SortedSet<String> references) implements Entry {}
 
     public final Map<String, Entry> entries = new ConcurrentHashMap<>();
     /** Output hashes modulo fixed-output derivations, per drv path and output (hex). */
@@ -96,7 +99,7 @@ public final class Store {
     }
 
     public Derivation derivation(String drvPath) {
-        if (entries.get(drvPath) instanceof Drv d) return d.drv();
+        if (entries.get(drvPath) instanceof Drv d) return Derivation.parse(d.name(), d.contents());
         throw new IllegalStateException("unknown derivation '" + drvPath + "'");
     }
 
@@ -136,7 +139,7 @@ public final class Store {
     public String addDerivation(Derivation drv) {
         String contents = drv.unparse(false, null);
         String path = StorePaths.textPath(drv.name + ".drv", contents, drv.references());
-        entries.putIfAbsent(path, new Drv(drv, contents));
+        entries.putIfAbsent(path, new Drv(drv.name, contents, drv.references()));
         if (!drvHashes.containsKey(path)) drvHashes.putIfAbsent(path, hashModulo(drv, false));
         return path;
     }
@@ -216,7 +219,7 @@ public final class Store {
         if (client.isValidPath(root)) return added;
         String got = switch (e) {
             case Text t -> client.addToStore(t.name(), "text:sha256", t.references(), out -> out.write(Bytes.get(t.contents())));
-            case Drv d -> client.addToStore(d.drv().name + ".drv", "text:sha256", d.references(), out -> out.write(Bytes.get(d.contents())));
+            case Drv d -> client.addToStore(d.name() + ".drv", "text:sha256", d.references(), out -> out.write(Bytes.get(d.contents())));
             case Source src -> src.recursive()
                     ? client.addToStore(src.name(), "fixed:r:sha256", new TreeSet<>(), out -> Nar.dump(src.path(), src.filter(), out))
                     : client.addToStore(src.name(), "fixed:sha256", new TreeSet<>(), out -> Fs.readFile(src.path(), out));

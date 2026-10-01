@@ -372,9 +372,8 @@ public final class Translator {
             Fn fn = new Fn(false);
             NixNode body = strict(e, new Scope(s, fn, Map.of(), -1));
             finish(fn);
-            SourceSection sec = section(e.pos());
-            String name = "thunk@" + source.getName() + ":" + sec.getStartLine() + ":" + sec.getStartColumn();
-            return new NixRootNode(language, fn.envSize(), false, body, name, sec).getCallTarget();
+            // Named when asked: a NixOS evaluation translates hundreds of thousands of thunks.
+            return new NixRootNode(language, fn.envSize(), false, body, null, section(e.pos())).getCallTarget();
         }));
     }
 

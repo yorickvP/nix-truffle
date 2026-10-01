@@ -118,7 +118,13 @@ The design follows [thc](https://github.com/ekmett/thc), Edward Kmett's Haskell-
 - **Attrsets use a shared key array as a cheap shape.** An attrset literal sorts its keys once
   at translation time and shares that array with every set it creates, so selection
   (`nodes/SelectStepNode.java`) caches the attribute index per key-array identity. Formals
-  binding does the same.
+  binding does the same. Sets made at runtime (`//`, `listToAttrs`, `removeAttrs`, ...) share
+  key arrays too, through a cache by contents (and for `//`, by the two sides' arrays): only a
+  quarter of a NixOS evaluation's key arrays are distinct.
+- **Attribute positions are spliced, not copied.** `//` keeps positions like CppNix, but most
+  updates add a few attributes to a big set, and the evaluation keeps hundreds of thousands of
+  their results. A result's positions are runs taken from those of its two sides, and
+  `unsafeGetAttrPos` follows them (flattened when nested deeper than eight).
 
 ## Polyglot / foreign import
 
@@ -277,8 +283,9 @@ Most of a one-off run is warm-up. HotSpot is compiling the interpreter itself, t
 is compiling nixpkgs, and both are thrown away when the process exits. Very little of the code
 runs often: a NixOS evaluation makes 490k thunk and lambda bodies, of which 20% ever run and
 1.5k get compiled. So the translator only checks bodies for errors at first, and builds them
-when they first run (`nodes/LazyCode.java`). And `bin/nix-truffle` uses compact object headers,
-which take a third off the memory of a large evaluation. The language uses
+when they first run (`nodes/LazyCode.java`), keeping their syntax trees until then (with
+exact-size lists, and one string per identifier for all files). And `bin/nix-truffle` uses
+compact object headers, which take a third off the memory of a large evaluation. The language uses
 `ContextPolicy.SHARED`, so parsed and compiled code can be shared by all contexts of an engine:
 code depends on a context only through its `GlobalScope` (the names in its base environment),
 and `NixLanguage` keeps parsed files by path and contents. Two things build on that.
@@ -371,7 +378,7 @@ Evaluating all seven NixOS configurations of a flake in one command (`nix-truffl
 takes 9.4 s with `--option eval-cores 8` instead of 26.4 s (Lix: 35.6 s). The largest of them
 alone takes 5.7 s instead of 9.6 s cold, and 3.1 s instead of 6.8 s warm in the daemon. The
 store is used without a lock (computing store paths means hashing sources and derivations), and
-peak memory grows with the work in progress: 10.6 GB for all seven, against 8.5 GB on one core.
+peak memory grows with the work in progress: 8.0 GB for all seven, against 7.1 GB on one core.
 `-Dnixtruffle.parallelStats=true` prints what the workers did and how long threads waited.
 
 ## What's there and what isn't

@@ -126,4 +126,110 @@ public final class Derivation {
         }
         s.append('"');
     }
+
+    /** Reads a derivation in the ATerm format; an IllegalArgumentException says where it is wrong. */
+    public static Derivation parse(String name, String s) {
+        Derivation drv = new Derivation(name);
+        ATerm p = new ATerm(s);
+        p.expect("Derive([");
+        while (!p.eat(']')) {
+            p.eat(',');
+            p.expect("(");
+            String output = p.string();
+            p.expect(",");
+            String path = p.string();
+            p.expect(",");
+            String algo = p.string();
+            p.expect(",");
+            String hash = p.string();
+            p.expect(")");
+            drv.outputs.put(output, new Output(path, algo, hash));
+        }
+        p.expect(",[");
+        while (!p.eat(']')) {
+            p.eat(',');
+            p.expect("(");
+            String input = p.string();
+            p.expect(",[");
+            TreeSet<String> outs = new java.util.TreeSet<>();
+            while (!p.eat(']')) {
+                p.eat(',');
+                outs.add(p.string());
+            }
+            p.expect(")");
+            drv.inputDrvs.put(input, outs);
+        }
+        p.expect(",[");
+        while (!p.eat(']')) {
+            p.eat(',');
+            drv.inputSrcs.add(p.string());
+        }
+        p.expect(",");
+        drv.platform = p.string();
+        p.expect(",");
+        drv.builder = p.string();
+        p.expect(",[");
+        while (!p.eat(']')) {
+            p.eat(',');
+            drv.args.add(p.string());
+        }
+        p.expect(",[");
+        while (!p.eat(']')) {
+            p.eat(',');
+            p.expect("(");
+            String k = p.string();
+            p.expect(",");
+            drv.env.put(k, p.string());
+            p.expect(")");
+        }
+        p.expect(")");
+        return drv;
+    }
+
+    private static final class ATerm {
+        final String s;
+        int pos;
+
+        ATerm(String s) {
+            this.s = s;
+        }
+
+        IllegalArgumentException fail() {
+            return new IllegalArgumentException("unexpected input at offset " + pos);
+        }
+
+        void expect(String t) {
+            if (!s.startsWith(t, pos)) throw fail();
+            pos += t.length();
+        }
+
+        boolean eat(char c) {
+            if (pos < s.length() && s.charAt(pos) == c) {
+                pos++;
+                return true;
+            }
+            return false;
+        }
+
+        String string() {
+            expect("\"");
+            StringBuilder sb = new StringBuilder();
+            while (true) {
+                if (pos >= s.length()) throw fail();
+                char c = s.charAt(pos++);
+                if (c == '"') return sb.toString();
+                if (c == '\\') {
+                    char e = s.charAt(pos++);
+                    sb.append(switch (e) {
+                        case 'n' -> '\n';
+                        case 'r' -> '\r';
+                        case 't' -> '\t';
+                        default -> e;
+                    });
+                } else {
+                    sb.append(c);
+                }
+            }
+        }
+    }
 }

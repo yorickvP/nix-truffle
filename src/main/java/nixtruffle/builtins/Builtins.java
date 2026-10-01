@@ -369,7 +369,7 @@ public final class Builtins {
                 positions[n] = entry.pos(entry.indexOf("value"));
                 anyPosition |= positions[n++] != null;
             }
-            return new NixAttrs(map.keySet().toArray(new String[0]), map.values().toArray(), anyPosition ? positions : null);
+            return new NixAttrs(NixAttrs.shared(map.keySet().toArray(new String[0])), map.values().toArray(), anyPosition ? positions : null);
         });
         def("mapAttrs", 2, a -> {
             NixAttrs s = attrs(a[1]);
@@ -432,7 +432,7 @@ public final class Builtins {
                 map.put(l.info.formals()[i], l.info.hasDefault()[i]);
                 positions.put(l.info.formals()[i], l.info.formalPositions()[i]);
             }
-            return new NixAttrs(map.keySet().toArray(new String[0]), map.values().toArray(), positions.values().toArray());
+            return new NixAttrs(NixAttrs.shared(map.keySet().toArray(new String[0])), map.values().toArray(), positions.values().toArray());
         });
         def("genericClosure", 1, a -> {
             NixAttrs args = attrs(a[0]);
