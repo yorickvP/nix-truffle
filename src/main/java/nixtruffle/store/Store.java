@@ -5,19 +5,25 @@ import nixtruffle.runtime.Bytes;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * What evaluation has put "into the store": derivations, text files and copied sources, by store
  * path. Paths are computed exactly like Nix does, without touching the real store; they are
  * written through the daemon when something needs them to exist (reading them, checking that
  * they're valid, instantiation), unless the store is {@link #readOnly}.
+ *
+ * <p>Threads use it without a lock: its registries are concurrent maps, and paths and hashes are
+ * functions of what they're computed from, so two threads that compute the same one at once get
+ * the same result. Nothing here evaluates Nix code (source filters are evaluated once, while
+ * hashing, and replayed when writing), so a thread never holds a lock here while it waits for
+ * another thread's thunk.
  */
 public final class Store {
     /** How to produce a store path's contents. */
@@ -36,13 +42,13 @@ public final class Store {
         public SortedSet<String> references() { return drv.references(); }
     }
 
-    public final Map<String, Entry> entries = new java.util.concurrent.ConcurrentHashMap<>();
+    public final Map<String, Entry> entries = new ConcurrentHashMap<>();
     /** Output hashes modulo fixed-output derivations, per drv path and output (hex). */
-    private final Map<String, Map<String, String>> drvHashes = new HashMap<>();
+    private final Map<String, Map<String, String>> drvHashes = new ConcurrentHashMap<>();
     /** {@code "${./foo}"}: local path -> store path. */
-    private final Map<String, String> srcToStore = new HashMap<>();
+    private final Map<String, String> srcToStore = new ConcurrentHashMap<>();
     /** Store paths known to be valid in the real store (written by us or checked). */
-    private final Set<String> valid = new HashSet<>();
+    private final Set<String> valid = ConcurrentHashMap.newKeySet();
 
     /** Don't write anything to the real store (like Nix's read-only mode). */
     public boolean readOnly;
@@ -54,47 +60,48 @@ public final class Store {
         return daemon;
     }
 
-    /** Whether we can talk to a daemon; without one, validity is judged by the file system. */
-    private boolean haveDaemon() {
+    /** The daemon connection, or null without a daemon: then validity is judged by the file system. */
+    private DaemonClient daemonOrNull() {
         try {
-            daemon();
-            return true;
+            return daemon();
         } catch (IOException e) {
-            return false;
+            return null;
         }
     }
 
     /** Whether a store path exists: created by this evaluation, or valid in the real store. */
-    public synchronized boolean isValidPath(String path) throws IOException {
+    public boolean isValidPath(String path) throws IOException {
         if (entries.containsKey(path) || valid.contains(path)) return true;
-        boolean ok = haveDaemon() ? daemon.isValidPath(path) : Fs.maybeLstat(path) != null;
+        DaemonClient d = daemonOrNull();
+        boolean ok = d != null ? d.isValidPath(path) : Fs.maybeLstat(path) != null;
         if (ok) valid.add(path);
         return ok;
     }
 
     /**
      * Makes sure a store path this evaluation created exists in the real store, so that it can be
-     * read (does nothing for other paths, and in read-only mode).
+     * read (does nothing for other paths, and in read-only mode). Threads that write overlapping
+     * closures at once may both add a path; the daemon locks it, and the second finds it there.
      */
-    public synchronized void ensureWritten(String storePath) throws IOException {
+    public void ensureWritten(String storePath) throws IOException {
         if (readOnly || !entries.containsKey(storePath) || valid.contains(storePath)) return;
-        Set<String> done = new HashSet<>(valid);
+        Set<String> done = new HashSet<>();
         writeClosure(daemon(), storePath, done);
         valid.addAll(done);
     }
 
     /** Records a path that has been added to the real store by other means (fetchers). */
-    public synchronized void markValid(String storePath) {
+    public void markValid(String storePath) {
         valid.add(storePath);
     }
 
-    public synchronized Derivation derivation(String drvPath) {
+    public Derivation derivation(String drvPath) {
         if (entries.get(drvPath) instanceof Drv d) return d.drv();
         throw new IllegalStateException("unknown derivation '" + drvPath + "'");
     }
 
     /** Port of libstore's {@code hashDerivationModulo}: output name -> hex hash. */
-    public synchronized Map<String, String> hashModulo(Derivation drv, boolean maskOutputs) {
+    public Map<String, String> hashModulo(Derivation drv, boolean maskOutputs) {
         Map<String, String> result = new TreeMap<>();
         if (drv.isFixedOutput()) {
             Derivation.Output out = drv.outputs.get("out");
@@ -116,53 +123,69 @@ public final class Store {
     }
 
     private Map<String, String> pathHashModulo(String drvPath) {
+        // Not computeIfAbsent: computing it computes those of the inputs.
         Map<String, String> h = drvHashes.get(drvPath);
         if (h == null) {
             h = hashModulo(derivation(drvPath), false);
-            drvHashes.put(drvPath, h);
+            drvHashes.putIfAbsent(drvPath, h);
         }
         return h;
     }
 
     /** Writes a derivation "to the store": computes its path and remembers it. */
-    public synchronized String addDerivation(Derivation drv) {
+    public String addDerivation(Derivation drv) {
         String contents = drv.unparse(false, null);
         String path = StorePaths.textPath(drv.name + ".drv", contents, drv.references());
         entries.putIfAbsent(path, new Drv(drv, contents));
-        drvHashes.computeIfAbsent(path, p -> hashModulo(drv, false));
+        if (!drvHashes.containsKey(path)) drvHashes.putIfAbsent(path, hashModulo(drv, false));
         return path;
     }
 
-    public synchronized String addText(String name, String contents, SortedSet<String> references) {
+    public String addText(String name, String contents, SortedSet<String> references) {
         String path = StorePaths.textPath(name, contents, references);
         entries.putIfAbsent(path, new Text(name, contents, references));
         return path;
     }
 
-    /** Store path of a local file tree, as {@code builtins.path} / {@code "${./foo}"} would add it. */
-    public synchronized String addSource(String name, String path, Nar.Filter filter, boolean recursive) throws IOException {
+    /**
+     * Store path of a local file tree, as {@code builtins.path} / {@code "${./foo}"} would add it.
+     * The filter is called once per file, here, as in Nix: writing the tree replays its answers.
+     */
+    public String addSource(String name, String path, Nar.Filter filter, boolean recursive) throws IOException {
+        Nar.Filter replay = null;
+        if (filter != null) {
+            Set<String> included = new HashSet<>();
+            Nar.Filter evaluated = filter;
+            filter = (p, type) -> {
+                boolean in = evaluated.include(p, type);
+                if (in) included.add(p);
+                return in;
+            };
+            replay = (p, type) -> included.contains(p);
+        }
         Hash hash = recursive ? Nar.hash(path, filter) : Hash.of("sha256", Fs.readFile(path));
         String storePath = StorePaths.fixedOutputPath(recursive, hash, name);
-        entries.putIfAbsent(storePath, new Source(name, path, filter, recursive));
+        entries.putIfAbsent(storePath, new Source(name, path, replay, recursive));
         return storePath;
     }
 
     /** {@code "${./foo}"}: copies are cached per path, like Nix's srcToStore. */
-    public synchronized String copyPathToStore(String path, String name) throws IOException {
+    public String copyPathToStore(String path, String name) throws IOException {
         String cached = srcToStore.get(path);
         if (cached != null) return cached;
         String storePath = addSource(name, path, null, true);
-        srcToStore.put(path, storePath);
-        return storePath;
+        String raced = srcToStore.putIfAbsent(path, storePath);
+        return raced != null ? raced : storePath;
     }
 
     /** References of any store path: ours from the registry, others from the daemon. */
-    public synchronized SortedSet<String> referencesOf(String path) {
+    public SortedSet<String> referencesOf(String path) {
         Entry e = entries.get(path);
         if (e != null) return e.references();
         try {
-            if (haveDaemon()) {
-                DaemonClient.PathInfo info = daemon.queryPathInfo(path);
+            DaemonClient d = daemonOrNull();
+            if (d != null) {
+                DaemonClient.PathInfo info = d.queryPathInfo(path);
                 if (info != null) return new TreeSet<>(info.references());
             }
         } catch (IOException ignored) {
@@ -172,7 +195,7 @@ public final class Store {
     }
 
     /** References of a store path we created (empty for paths we don't know). */
-    public synchronized SortedSet<String> references(String path) {
+    public SortedSet<String> references(String path) {
         Entry e = entries.get(path);
         return e == null ? new TreeSet<>() : e.references();
     }
@@ -182,8 +205,8 @@ public final class Store {
      * dependencies first. The daemon computes each path itself; a mismatch with ours is an error.
      * Returns the number of paths that were not valid yet.
      */
-    public synchronized int writeClosure(DaemonClient client, String root, Set<String> done) throws IOException {
-        if (!done.add(root)) return 0;
+    public int writeClosure(DaemonClient client, String root, Set<String> done) throws IOException {
+        if (!done.add(root) || valid.contains(root)) return 0;
         Entry e = entries.get(root);
         if (e == null) return 0; // not created by us (e.g. builtins.storePath): must exist already
         int added = 0;
@@ -203,7 +226,7 @@ public final class Store {
     }
 
     /** {@code computeFSClosure} over the paths we know about. */
-    public synchronized TreeSet<String> closure(String path) {
+    public TreeSet<String> closure(String path) {
         TreeSet<String> seen = new TreeSet<>();
         ArrayDeque<String> todo = new ArrayDeque<>();
         todo.add(path);

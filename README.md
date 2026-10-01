@@ -368,8 +368,10 @@ are already evaluated by then cost a check.
 
 Evaluating all seven NixOS configurations of a flake in one command (`nix-truffle eval --json
 .#nixosConfigurations --apply 'builtins.mapAttrs (n: c: c.config.system.build.toplevel.drvPath)'`)
-takes 13.4 s with `--option eval-cores 8` instead of 28.3 s (Lix: 35.6 s). The largest of them
-alone takes 6.65 s instead of 10.0 s cold, and 4.0 s instead of about 7 s warm in the daemon.
+takes 10.2 s with `--option eval-cores 8` instead of 28.3 s (Lix: 35.6 s). The largest of them
+alone takes 6.4 s instead of 10.0 s cold, and 4.0 s instead of about 7 s warm in the daemon. The
+store is used without a lock (computing store paths means hashing sources and derivations), and
+peak memory grows with the work in progress: 12–13 GB for all seven, against 9.5 GB on one core.
 `-Dnixtruffle.parallelStats=true` prints what the workers did and how long threads waited.
 
 ## What's there and what isn't
