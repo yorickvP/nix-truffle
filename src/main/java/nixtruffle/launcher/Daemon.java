@@ -239,17 +239,34 @@ public final class Daemon {
         }
     }
 
+    /**
+     * Five seconds after the last command, collects garbage, which gives the memory of the
+     * commands' evaluations back to the system (with G1 and a small MaxHeapFreeRatio, see
+     * Client.java); after NIX_TRUFFLE_DAEMON_IDLE, exits.
+     */
     private static void startIdleWatch(PrintStream log) {
         String idle = System.getenv("NIX_TRUFFLE_DAEMON_IDLE");
         long idleNanos = (idle != null ? Long.parseLong(idle) : 3 * 3600) * 1_000_000_000L;
         Thread t = new Thread(() -> {
+            long seen = lastActive;
+            boolean collected = true;
             while (true) {
                 try {
-                    Thread.sleep(Math.min(60_000, Math.max(1000, idleNanos / 1_000_000 / 4)));
+                    Thread.sleep(1000);
                 } catch (InterruptedException e) {
                     return;
                 }
-                if (active.get() == 0 && System.nanoTime() - lastActive > idleNanos) {
+                if (active.get() > 0 || lastActive != seen) {
+                    seen = lastActive;
+                    collected = false;
+                    continue;
+                }
+                long idleFor = System.nanoTime() - lastActive;
+                if (!collected && idleFor > 5_000_000_000L) {
+                    System.gc();
+                    collected = true;
+                }
+                if (idleFor > idleNanos) {
                     log.println("idle, exiting");
                     retire();
                     System.exit(0);

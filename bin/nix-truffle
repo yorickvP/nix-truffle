@@ -15,9 +15,14 @@ java="$(command -v "$java" || echo "$java")"
 jvm=(--enable-native-access=ALL-UNNAMED --sun-misc-unsafe-memory-access=allow -Dpolyglot.engine.WarnInterpreterOnly=true
   -XX:+UseCompactObjectHeaders ${NIX_TRUFFLE_JAVA_OPTS:-})
 cp="$root/target/classes:$(cat "$root/target/classpath.txt")"
+# One evaluation runs fastest, in the least memory, with the throughput collector holding the heap
+# to about five times the time spent collecting (half of G1's memory on a NixOS evaluation, and
+# 8% faster). The daemon uses G1 (see Client.java), which gives memory back between commands.
+gc=()
+[[ "${NIX_TRUFFLE_JAVA_OPTS:-}" == *GC* ]] || gc=(-XX:+UseParallelGC -XX:GCTimeRatio=4)
 if [[ "${NIX_TRUFFLE_DAEMON:-}" == 1 ]]; then
   # The client is a small JVM that only relays: no JIT beyond C1, the smallest GC.
   exec "$java" -XX:TieredStopAtLevel=1 -XX:+UseSerialGC -XX:-UsePerfData -cp "$root/target/classes" \
     nixtruffle.launcher.Client "$java" "${#jvm[@]}" "${jvm[@]}" "$cp" "$@"
 fi
-exec "$java" "${jvm[@]}" -cp "$cp" nixtruffle.launcher.Main "$@"
+exec "$java" "${gc[@]}" "${jvm[@]}" -cp "$cp" nixtruffle.launcher.Main "$@"

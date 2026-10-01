@@ -178,7 +178,10 @@ public final class Client {
         List<String> cmd = new ArrayList<>();
         // Keep the daemon out of the terminal's process group, so ^C in the terminal doesn't reach it.
         if (onPath("setsid")) cmd.add("setsid");
-        cmd.addAll(launch.command(List.of("-XX:G1PeriodicGCInterval=60000"), "nixtruffle.launcher.Daemon", List.of(socket.toString())));
+        // G1 gives memory back to the system: it keeps the heap at most 30% free after the daemon's
+        // collection when idle, and grows it less eagerly than by default (a few percent slower).
+        cmd.addAll(launch.command(List.of("-XX:+UseG1GC", "-XX:GCTimeRatio=9", "-XX:MinHeapFreeRatio=10", "-XX:MaxHeapFreeRatio=30"),
+                "nixtruffle.launcher.Daemon", List.of(socket.toString())));
         Process p = new ProcessBuilder(cmd).redirectInput(new File("/dev/null")).redirectErrorStream(true)
                 .redirectOutput(log.toFile()).start();
         long deadline = System.nanoTime() + 120_000_000_000L;
