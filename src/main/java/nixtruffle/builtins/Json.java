@@ -33,7 +33,7 @@ final class Json {
     static String toJSON(Object value, java.util.Set<String> context, boolean copyToStore) {
         StringBuilder sb = new StringBuilder();
         String[] invalid = {null};
-        write(Thunk.force(value), sb, context, copyToStore, invalid);
+        write(value, sb, context, copyToStore, invalid);
         if (invalid[0] != null) throw NixException.error("JSON serialization error: [json.exception.type_error.316] " + invalid[0], null);
         return sb.toString();
     }
@@ -51,7 +51,17 @@ final class Json {
         return sb.append('}').toString();
     }
 
-    private static void write(Object v, StringBuilder sb, java.util.Set<String> context, boolean copyToStore, String[] invalid) {
+    /** Every value is a level of {@code max-call-depth}, forced inside it (like CppNix). */
+    private static void write(Object value, StringBuilder sb, java.util.Set<String> context, boolean copyToStore, String[] invalid) {
+        nixtruffle.NixContext ctx = nixtruffle.runtime.CallDepth.enter(null);
+        try {
+            writeForced(Thunk.force(value), sb, context, copyToStore, invalid);
+        } finally {
+            nixtruffle.runtime.CallDepth.exit(ctx);
+        }
+    }
+
+    private static void writeForced(Object v, StringBuilder sb, java.util.Set<String> context, boolean copyToStore, String[] invalid) {
         switch (v) {
             case NixNull n -> sb.append("null");
             case Boolean b -> sb.append(b);
@@ -67,7 +77,7 @@ final class Json {
                 sb.append('[');
                 for (int i = 0; i < l.size(); i++) {
                     if (i > 0) sb.append(',');
-                    write(l.forceAt(i), sb, context, copyToStore, invalid);
+                    write(l.items[i], sb, context, copyToStore, invalid);
                 }
                 sb.append(']');
             }
@@ -77,7 +87,7 @@ final class Json {
                     return;
                 }
                 if (a.getRaw("outPath") != null) {
-                    write(a.get("outPath"), sb, context, copyToStore, invalid);
+                    write(a.getRaw("outPath"), sb, context, copyToStore, invalid);
                     return;
                 }
                 sb.append('{');
@@ -85,7 +95,7 @@ final class Json {
                     if (i > 0) sb.append(',');
                     quote(a.keys[i], sb, invalid);
                     sb.append(':');
-                    write(a.forceAt(i), sb, context, copyToStore, invalid);
+                    write(a.values[i], sb, context, copyToStore, invalid);
                 }
                 sb.append('}');
             }

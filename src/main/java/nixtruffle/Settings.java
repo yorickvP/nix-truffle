@@ -39,6 +39,7 @@ public final class Settings {
         values.put("pure-eval", "false");
         values.put("polyglot", "true");
         values.put("trace-verbose", "false");
+        values.put("max-call-depth", "10000");
     }
 
     /** The settings from the configuration files and {@code $NIX_CONFIG}. */

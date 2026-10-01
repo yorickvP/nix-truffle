@@ -6,6 +6,8 @@ import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.RootCallTarget;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.nodes.ExplodeLoop;
+import nixtruffle.NixContext;
+import nixtruffle.runtime.CallDepth;
 import nixtruffle.runtime.NixAttrs;
 import nixtruffle.runtime.NixException;
 import nixtruffle.runtime.NixLambda;
@@ -39,10 +41,16 @@ public final class FunctionNodes {
             this.body = body;
         }
 
+        /** A call is a level of {@code max-call-depth}, binding the arguments included. */
         @Override
         public Object execute(VirtualFrame frame) {
-            prologue.execute(frame);
-            return body.execute(frame);
+            NixContext ctx = CallDepth.enter(this);
+            try {
+                prologue.execute(frame);
+                return body.execute(frame);
+            } finally {
+                CallDepth.exit(ctx);
+            }
         }
     }
 

@@ -137,7 +137,15 @@ public final class Values {
      */
     @TruffleBoundary
     public static String coerce(Object v, boolean coerceMore, boolean copyToStore, java.util.Set<String> context, Node location) {
-        Object f = Thunk.force(v);
+        nixtruffle.NixContext ctx = CallDepth.enter(location);
+        try {
+            return coerceForced(Thunk.force(v), coerceMore, copyToStore, context, location);
+        } finally {
+            CallDepth.exit(ctx);
+        }
+    }
+
+    private static String coerceForced(Object f, boolean coerceMore, boolean copyToStore, java.util.Set<String> context, Node location) {
         if (f instanceof String s) return s;
         if (f instanceof NixString s) {
             NixString.addContext(s, context);
@@ -163,8 +171,9 @@ public final class Values {
             if (f instanceof NixList l) {
                 StringBuilder sb = new StringBuilder();
                 for (int i = 0; i < l.items.length; i++) {
+                    // Like CppNix, the item is forced one level deeper, by the recursive coercion.
+                    sb.append(coerce(l.items[i], true, copyToStore, context, location));
                     Object item = l.forceAt(i);
-                    sb.append(coerce(item, true, copyToStore, context, location));
                     // "!!! not quite correct" in CppNix: no separator after an empty list.
                     if (i < l.items.length - 1 && !(item instanceof NixList inner && inner.size() == 0)) sb.append(' ');
                 }
@@ -177,14 +186,20 @@ public final class Values {
     // ----------------------------------------------------- equality, ordering
 
     /**
-     * CppNix's {@code eqValues} on two list elements or attribute values: the same value slot (a
-     * shared thunk, or the very same value) is equal to itself even if it is a function, like
-     * CppNix's pointer comparison of {@code Value}s.
+     * CppNix's {@code eqValues} on two list elements or attribute values: both are forced, then
+     * the same value slot (a shared thunk, or the very same value) is equal to itself even if it
+     * is a function, like CppNix's pointer comparison of {@code Value}s.
      */
     @TruffleBoundary
     public static boolean equal(Object a, Object b) {
-        if (a == b) return true;
-        return equalValues(Thunk.force(a), Thunk.force(b));
+        nixtruffle.NixContext ctx = CallDepth.enter(null);
+        try {
+            Object x = Thunk.force(a);
+            Object y = Thunk.force(b);
+            return a == b || equalValues(x, y);
+        } finally {
+            CallDepth.exit(ctx);
+        }
     }
 
     /**
@@ -193,7 +208,12 @@ public final class Values {
      */
     @TruffleBoundary
     public static boolean equalTop(Object a, Object b) {
-        return equalValues(Thunk.force(a), Thunk.force(b));
+        nixtruffle.NixContext ctx = CallDepth.enter(null);
+        try {
+            return equalValues(Thunk.force(a), Thunk.force(b));
+        } finally {
+            CallDepth.exit(ctx);
+        }
     }
 
     private static boolean equalValues(Object x, Object y) {

@@ -34,6 +34,9 @@ public final class NixContext {
 
     /** {@code pure-eval}: files can only be read from store paths in {@link #allowedPaths}. */
     public final boolean pureEval;
+    /** The depth of calls and recursive operations, and its limit (see {@link nixtruffle.runtime.CallDepth}). */
+    public int callDepth;
+    public final int maxCallDepth;
     /**
      * In pure evaluation, the store paths that may be read: fetched trees, and what {@code
      * toFile}, {@code builtins.path} and path interpolation added (CppNix's {@code allowPath}).
@@ -47,6 +50,7 @@ public final class NixContext {
         this.settings = settings;
         this.store.readOnly = readOnly;
         this.pureEval = settings.getBool("pure-eval");
+        this.maxCallDepth = (int) Math.min(Integer.MAX_VALUE, settings.getLong("max-call-depth", 10000));
     }
 
     private nixtruffle.fetch.Fetcher fetcher;

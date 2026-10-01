@@ -6,13 +6,18 @@ import com.oracle.truffle.api.dsl.NodeChild;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import nixtruffle.runtime.Arith;
+import nixtruffle.runtime.CallDepth;
 import nixtruffle.runtime.Foreign;
 import nixtruffle.runtime.NixAttrs;
 import nixtruffle.runtime.NixException;
 import nixtruffle.runtime.NixList;
 import nixtruffle.runtime.Values;
 
-/** Binary operators, specialized on unboxed ints/floats with generic fallbacks. */
+/**
+ * Binary operators, specialized on unboxed ints/floats with generic fallbacks. {@code ==} and
+ * string {@code +} check {@code max-call-depth} like CppNix (see {@link CallDepth}); the operators
+ * that are primop calls there are wrapped in a {@link CallLevelNode}.
+ */
 public final class OperatorNodes {
     private OperatorNodes() {}
 
@@ -35,7 +40,10 @@ public final class OperatorNodes {
 
         @Specialization
         @TruffleBoundary
-        protected String doString(String a, String b) { return a.concat(b); }
+        protected String doString(String a, String b) {
+            CallDepth.check(this);
+            return a.concat(b);
+        }
 
         @Fallback
         protected Object doOther(Object a, Object b) { return Arith.add(a, b, this); }
@@ -106,17 +114,17 @@ public final class OperatorNodes {
 
     public abstract static class Equal extends Binary {
         @Specialization
-        protected boolean doLong(long a, long b) { return a == b; }
+        protected boolean doLong(long a, long b) { CallDepth.check(this); return a == b; }
 
         @Specialization
-        protected boolean doDouble(double a, double b) { return a == b; }
+        protected boolean doDouble(double a, double b) { CallDepth.check(this); return a == b; }
 
         @Specialization
-        protected boolean doBoolean(boolean a, boolean b) { return a == b; }
+        protected boolean doBoolean(boolean a, boolean b) { CallDepth.check(this); return a == b; }
 
         @Specialization
         @TruffleBoundary
-        protected boolean doString(String a, String b) { return a.equals(b); }
+        protected boolean doString(String a, String b) { CallDepth.check(this); return a.equals(b); }
 
         @Fallback
         protected boolean doOther(Object a, Object b) { return Values.equalTop(a, b); }

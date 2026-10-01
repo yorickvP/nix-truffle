@@ -15,7 +15,7 @@ public abstract class NixFunction extends NixObject {
     @TruffleBoundary
     public final Object execute(Object[] arguments) {
         Object f = this;
-        for (Object arg : arguments) f = Apply.apply(f, Foreign.toNix(arg), null);
+        for (Object arg : arguments) f = Apply.applyFromHost(f, Foreign.toNix(arg));
         return Foreign.out(Thunk.force(f));
     }
 }

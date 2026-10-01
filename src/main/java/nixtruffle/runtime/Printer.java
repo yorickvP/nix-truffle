@@ -24,10 +24,31 @@ public final class Printer {
         return sb.toString();
     }
 
-    /** {@code builtins.deepSeq}: force everything reachable. */
+    /**
+     * {@code builtins.deepSeq}: force everything reachable (CppNix's {@code forceValueDeep}; every
+     * value is a level of {@code max-call-depth}, forced inside it).
+     */
     @TruffleBoundary
     public static void deepForce(Object value) {
-        new Printer(true).print(value, new StringBuilder());
+        deepForce(value, new IdentityHashMap<>());
+    }
+
+    private static void deepForce(Object value, IdentityHashMap<Object, Boolean> seen) {
+        nixtruffle.NixContext ctx = CallDepth.enter(null);
+        try {
+            Object v = Thunk.force(value);
+            if (v instanceof NixList l) {
+                if (seen.put(l, true) != null) return;
+                for (int i = 0; i < l.size(); i++) deepForce(l.items[i], seen);
+            } else if (v instanceof NixAttrs a) {
+                if (seen.put(a, true) != null) return;
+                for (int i = 0; i < a.size(); i++) deepForce(a.values[i], seen);
+            } else if (Foreign.isForeign(v)) {
+                new Printer(true).print(v, new StringBuilder());
+            }
+        } finally {
+            CallDepth.exit(ctx);
+        }
     }
 
     private void print(Object v, StringBuilder sb) {

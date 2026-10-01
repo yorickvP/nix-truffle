@@ -19,6 +19,15 @@ public final class AssertEq {
 
     @TruffleBoundary
     public static void check(Object a, Object b) {
+        nixtruffle.NixContext ctx = CallDepth.enter(null);
+        try {
+            checkForced(a, b);
+        } finally {
+            CallDepth.exit(ctx);
+        }
+    }
+
+    private static void checkForced(Object a, Object b) {
         Object v1 = Thunk.force(a);
         Object v2 = Thunk.force(b);
         if (v1 == v2) return;

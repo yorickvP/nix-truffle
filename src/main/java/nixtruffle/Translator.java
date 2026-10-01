@@ -9,6 +9,7 @@ import nixtruffle.builtins.Builtins;
 import nixtruffle.nodes.ApplyNode;
 import nixtruffle.nodes.AttrKeyNode;
 import nixtruffle.nodes.AttrsNode;
+import nixtruffle.nodes.CallLevelNode;
 import nixtruffle.nodes.ControlNodes;
 import nixtruffle.nodes.ControlNodes.WriteSlot;
 import nixtruffle.nodes.FunctionNodes;
@@ -203,7 +204,7 @@ public final class Translator {
             }
             case BinOp b -> binop(b, s);
             case Not n -> new ControlNodes.Not(strict(n.operand(), s));
-            case Neg n -> SubNodeGen.create(new LongLiteral(0), strict(n.operand(), s));
+            case Neg n -> new CallLevelNode(SubNodeGen.create(new LongLiteral(0), strict(n.operand(), s)));
         };
         node.setSourceSection(section(e.pos()));
         return node;
@@ -245,13 +246,14 @@ public final class Translator {
         NixNode r = strict(b.right(), s);
         return switch (b.op()) {
             case "+" -> AddNodeGen.create(l, r);
-            case "-" -> SubNodeGen.create(l, r);
-            case "*" -> MulNodeGen.create(l, r);
-            case "/" -> DivNodeGen.create(l, r);
-            case "<" -> LessThanNodeGen.create(l, r);
-            case ">" -> LessThanNodeGen.create(r, l);
-            case "<=" -> new ControlNodes.Not(LessThanNodeGen.create(r, l));
-            case ">=" -> new ControlNodes.Not(LessThanNodeGen.create(l, r));
+            // Primop calls in CppNix (__sub, __lessThan, ...), a max-call-depth level with their operands.
+            case "-" -> new CallLevelNode(SubNodeGen.create(l, r));
+            case "*" -> new CallLevelNode(MulNodeGen.create(l, r));
+            case "/" -> new CallLevelNode(DivNodeGen.create(l, r));
+            case "<" -> new CallLevelNode(LessThanNodeGen.create(l, r));
+            case ">" -> new CallLevelNode(LessThanNodeGen.create(r, l));
+            case "<=" -> new ControlNodes.Not(new CallLevelNode(LessThanNodeGen.create(r, l)));
+            case ">=" -> new ControlNodes.Not(new CallLevelNode(LessThanNodeGen.create(l, r)));
             case "==" -> EqualNodeGen.create(l, r);
             case "!=" -> new ControlNodes.Not(EqualNodeGen.create(l, r));
             case "&&" -> new ControlNodes.And(l, r);

@@ -79,8 +79,17 @@ final class Xml {
         out.append(" />\n");
     }
 
+    /** Every value is a level of {@code max-call-depth}, forced inside it (like CppNix). */
     private void value(Object raw) {
-        Object v = Thunk.force(raw);
+        nixtruffle.NixContext ctx = nixtruffle.runtime.CallDepth.enter(null);
+        try {
+            valueForced(Thunk.force(raw));
+        } finally {
+            nixtruffle.runtime.CallDepth.exit(ctx);
+        }
+    }
+
+    private void valueForced(Object v) {
         switch (v) {
             case Long l -> empty("int", attrs("value", Long.toString(l)));
             case Boolean b -> empty("bool", attrs("value", b.toString()));
