@@ -6,7 +6,7 @@ import nixtruffle.runtime.NixException;
 
 /** A REPL-scope variable: an attribute of the attrset the REPL input's root was called with. */
 public final class ReplVarNode extends NixNode {
-    private final int depth;
+    @com.oracle.truffle.api.CompilerDirectives.CompilationFinal private int depth;
     private final String name;
     @Child private SelectStepNode step = SelectStepNode.create();
 
@@ -15,9 +15,15 @@ public final class ReplVarNode extends NixNode {
         this.name = name;
     }
 
+    /** See {@link ReadVarNode#shallower}. */
+    public void shallower() {
+        depth--;
+    }
+
+    /** The REPL scope is what the top level's environment encloses. */
     @Override
     public Object execute(VirtualFrame frame) {
-        NixAttrs scope = (NixAttrs) frameAt(frame, depth).getArguments()[0];
+        NixAttrs scope = (NixAttrs) envAt(frame, depth)[0];
         Object value = step.execute(scope, name);
         if (value == SelectStepNode.MISSING) {
             com.oracle.truffle.api.CompilerDirectives.transferToInterpreter();

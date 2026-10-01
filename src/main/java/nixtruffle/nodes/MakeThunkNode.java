@@ -21,7 +21,7 @@ public final class MakeThunkNode extends NixNode {
     public Object execute(VirtualFrame frame) {
         // Not a compilation constant: building the root elsewhere shouldn't invalidate this code.
         RootCallTarget t = code.built();
-        if (t == null) return new Thunk(NixLanguage.get(this).lazyThunkTarget(), new LazyCode.Env(code, frame.materialize()));
-        return new Thunk(t, frame.materialize());
+        if (t == null) return new Thunk(NixLanguage.get(this).lazyThunkTarget(), new LazyCode.Env(code, env(frame)));
+        return new Thunk(t, env(frame));
     }
 }

@@ -61,7 +61,7 @@ public final class ControlNodes {
         }
     }
 
-    /** Stores a (lazy) value into a frame slot. */
+    /** Stores a (lazy) value into a slot of the environment. */
     public static final class WriteSlot extends Node {
         private final int slot;
         @Child private NixNode value;
@@ -72,7 +72,7 @@ public final class ControlNodes {
         }
 
         public void execute(VirtualFrame frame) {
-            frame.setObject(slot, value.execute(frame));
+            NixNode.env(frame)[slot] = value.execute(frame);
         }
     }
 
@@ -111,7 +111,7 @@ public final class ControlNodes {
 
         @Override
         public Object execute(VirtualFrame frame) {
-            frame.setObject(slot, env.execute(frame));
+            NixNode.env(frame)[slot] = env.execute(frame);
             return body.execute(frame);
         }
     }

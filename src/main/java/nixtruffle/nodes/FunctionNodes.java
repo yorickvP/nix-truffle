@@ -33,7 +33,7 @@ public final class FunctionNodes {
                 CompilerDirectives.transferToInterpreterAndInvalidate();
                 target = code.target();
             }
-            return new NixLambda(target, frame.materialize(), info);
+            return new NixLambda(target, env(frame), info);
         }
     }
 
@@ -68,7 +68,7 @@ public final class FunctionNodes {
 
         @Override
         public Object execute(VirtualFrame frame) {
-            frame.setObject(slot, frame.getArguments()[1]);
+            env(frame)[slot] = frame.getArguments()[1];
             return null;
         }
     }
@@ -110,16 +110,17 @@ public final class FunctionNodes {
         public Object execute(VirtualFrame frame) {
             Object arg = force.execute(frame.getArguments()[1]);
             if (!(arg instanceof NixAttrs attrs)) throw NixException.typeError(arg, "a set", this);
-            if (argSlot >= 0) frame.setObject(argSlot, arg);
+            Object[] env = env(frame);
+            if (argSlot >= 0) env[argSlot] = arg;
             int[] indices = indicesFor(attrs);
             int matched = 0;
             for (int i = 0; i < names.length; i++) {
                 int index = indices[i];
                 if (index >= 0) {
-                    frame.setObject(slots[i], attrs.values[index]);
+                    env[slots[i]] = attrs.values[index];
                     matched++;
                 } else if (defaultIndex[i] >= 0) {
-                    frame.setObject(slots[i], defaults[defaultIndex[i]].execute(frame));
+                    env[slots[i]] = defaults[defaultIndex[i]].execute(frame);
                 } else {
                     CompilerDirectives.transferToInterpreter();
                     throw NixException.error("function '" + functionName + "' called without required argument '" + names[i] + "'", this);

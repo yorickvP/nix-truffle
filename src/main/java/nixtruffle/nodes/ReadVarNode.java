@@ -1,6 +1,5 @@
 package nixtruffle.nodes;
 
-import com.oracle.truffle.api.frame.Frame;
 import com.oracle.truffle.api.frame.VirtualFrame;
 
 /**
@@ -9,7 +8,7 @@ import com.oracle.truffle.api.frame.VirtualFrame;
  * immutable, so this is invisible to the program.
  */
 public final class ReadVarNode extends NixNode {
-    private final int depth;
+    @com.oracle.truffle.api.CompilerDirectives.CompilationFinal private int depth;
     private final int slot;
     @Child private ForceNode force = ForceNode.create();
 
@@ -18,12 +17,17 @@ public final class ReadVarNode extends NixNode {
         this.slot = slot;
     }
 
+    /** The translator found the function this is in has no environment of its own. */
+    public void shallower() {
+        depth--;
+    }
+
     @Override
     public Object execute(VirtualFrame frame) {
-        Frame f = frameAt(frame, depth);
-        Object raw = f.getObject(slot);
+        Object[] env = envAt(frame, depth);
+        Object raw = env[slot];
         Object value = force.execute(raw);
-        if (value != raw) f.setObject(slot, value);
+        if (value != raw) env[slot] = value;
         return value;
     }
 }

@@ -78,11 +78,11 @@ of thunks, which don't count.
 The design follows [thc](https://github.com/ekmett/thc), Edward Kmett's Haskell-on-Truffle
 (`Thunk.java`, `Force.java`, `DispatchThunkTarget.java`, `docs/thunk-updates.md` there).
 
-- **A thunk is a call target plus a captured frame** (`runtime/Thunk.java`). Every expression
-  that needs suspending gets its own `RootNode`. The thunk holds that root's `RootCallTarget`,
-  the enclosing `MaterializedFrame`, and a state: *pending*, *blackhole* or *done*.
+- **A thunk is a call target plus a captured environment** (`runtime/Thunk.java`). Every
+  expression that needs suspending gets its own `RootNode`. The thunk holds that root's
+  `RootCallTarget`, the enclosing environment, and a state: *pending*, *blackhole* or *done*.
   Re-entering a blackholed thunk raises `infinite recursion encountered`. On completion the
-  thunk keeps only the answer and drops the target and frame so they can be collected. If
+  thunk keeps only the answer and drops the target and environment so they can be collected. If
   evaluation throws, it goes back to *pending*, as in CppNix, so `tryEval` and later forces see
   the error again.
 - **Forcing is a specializing node with an inline cache on the thunk's target**
@@ -93,7 +93,7 @@ The design follows [thc](https://github.com/ekmett/thc), Edward Kmett's Haskell-
   `bench/fib.nix` show exactly that: `thunk@fib.nix:2:42` (the `n - 1` argument) is inlined
   into `fib`, and `fib` into itself a few levels deep.
 - **Forced bindings are written back** (thc's "writeForced", `nodes/ReadVarNode.java`). After a
-  strict variable read forces a thunk, the answer replaces the thunk in the frame slot, so the
+  strict variable read forces a thunk, the answer replaces the thunk in the variable's slot, so the
   next read skips the thunk entirely. Bindings are immutable, so the program can't tell. The
   same is done for attrset values and list elements.
 - **Thunks are only created when needed** (`Translator.lazy`, like CppNix's `maybeThunk` and
@@ -101,12 +101,16 @@ The design follows [thc](https://github.com/ekmett/thc), Edward Kmett's Haskell-
   never wrapped: a variable in a lazy position shares the binding's existing thunk. The
   exception is a reference to another member of the same `let`/`rec`/formals group, whose slot
   may not be written yet (`let a = b; b = 1;`).
-- **Frames and scoping are resolved statically.** Every lambda body and every thunk body is
-  its own root. `arguments[0]` is the lexically enclosing frame and variables are
-  `(depth, slot)`. `let`, `rec`, `with` and formals just allocate slots in the enclosing root's
-  frame. Nix has no loops, so a node runs at most once per activation, and one slot per
-  binding is enough. Unbound names fall back to the enclosing `with` scopes at runtime (after
-  builtins, as in Nix).
+- **Environments and scoping are resolved statically.** Every lambda body and every thunk body
+  is its own root, called with the environment it closes over. A root's environment is an
+  `Object[]`: the enclosing environment, then its local variables. `let`, `rec`, `with` and
+  formals just allocate slots in it, and a root without any uses the enclosing one. Variables
+  are `(depth, slot)` in that chain. Nix has no loops, so a node runs at most once per
+  activation, and one slot per binding is enough. Unbound names fall back to the enclosing
+  `with` scopes at runtime (after builtins, as in Nix). These are plain arrays rather than
+  Truffle frame slots: every environment a closure or thunk keeps would otherwise be a frame
+  object with arrays for the arguments, the slots, primitive slots and their tags, and those
+  environments are much of an evaluation's memory.
 - **Builtins that build lazy structures** (`map`, `genList`, `mapAttrs`, ...) create thunks
   whose target is a shared "apply f to x" root, so every thunk goes through the same `ForceNode`
   machinery.

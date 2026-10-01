@@ -1,8 +1,6 @@
 package nixtruffle;
 
 import com.oracle.truffle.api.TruffleFile;
-import com.oracle.truffle.api.frame.FrameDescriptor;
-import com.oracle.truffle.api.frame.FrameSlotKind;
 import com.oracle.truffle.api.source.Source;
 import com.oracle.truffle.api.source.SourceSection;
 import nixtruffle.builtins.Builtins;
@@ -79,25 +77,46 @@ public final class Translator {
     /** While building a deferred body: it has been checked already, with everything in it. */
     private boolean checked;
 
-    /** A root being built: its nesting level and number of frame slots. */
+    /**
+     * A root being built. Its environment has its local variables from index 1 on (index 0 is the
+     * enclosing environment); without locals, it uses the enclosing one (a file's top level always
+     * has one). Variable reads in it that reach out past it were translated as if it had one, and
+     * are made a level shallower when it turns out not to ({@link #finish}). The roots it encloses
+     * are built after it, so whether they have environments is known then.
+     */
     private static final class Fn {
-        final int level;
-        int slots;
+        final boolean file;
+        int slots = 1;
+        final List<Runnable> outward = new ArrayList<>();
 
-        Fn(Fn parent) { this.level = parent == null ? 0 : parent.level + 1; }
+        Fn(boolean file) { this.file = file; }
 
         int alloc() { return slots++; }
+
+        boolean hasEnv() { return file || slots > 1; }
+
+        int envSize() { return hasEnv() ? slots : 0; }
+    }
+
+    /** Done translating {@code fn}'s body: fixes the reads that assumed it had an environment. */
+    private static void finish(Fn fn) {
+        if (!fn.hasEnv()) fn.outward.forEach(Runnable::run);
+        fn.outward.clear();
     }
 
     /** A lexical scope. {@code withSlot >= 0} marks a {@code with} scope. */
     private record Scope(Scope parent, Fn fn, Map<String, Integer> vars, int withSlot) {}
 
+    /**
+     * What a name refers to. {@code outward}: the depth counts the environment of the function
+     * being translated, which it may turn out not to have (see {@link Fn}).
+     */
     private sealed interface Resolved {}
-    private record Local(int depth, int slot, Scope scope) implements Resolved {}
-    private record WithVar(int[] depths, int[] slots) implements Resolved {}
+    private record Local(int depth, int slot, Scope scope, boolean outward) implements Resolved {}
+    private record WithVar(int[] depths, int[] slots, boolean[] outward) implements Resolved {}
     /** A name in the base environment: its index in {@link #globals}, or its value if that is the same in every context. */
     private record Global(int index, Object constant) implements Resolved {}
-    private record ReplVar(int depth) implements Resolved {}
+    private record ReplVar(int depth, boolean outward) implements Resolved {}
 
     /** {@code path} is the file (a byte string) or null; relative paths resolve against {@code baseDir}. */
     public Translator(NixLanguage language, Source source, String path, String baseDir, java.util.Set<String> replNames, GlobalScope globals) {
@@ -110,18 +129,13 @@ public final class Translator {
     }
 
     public NixRootNode translateFile(Expr e) {
-        Fn fn = new Fn(null);
+        Fn fn = new Fn(true);
         NixNode body = strict(e, new Scope(null, fn, Map.of(), -1));
-        return new NixRootNode(language, descriptor(fn), body, source.getName(), source.createSection(0, source.getLength()));
+        finish(fn);
+        return new NixRootNode(language, fn.envSize(), true, body, source.getName(), source.createSection(0, source.getLength()));
     }
 
     // ------------------------------------------------------------ utilities
-
-    private static FrameDescriptor descriptor(Fn fn) {
-        FrameDescriptor.Builder builder = FrameDescriptor.newBuilder(fn.slots);
-        builder.addSlots(fn.slots, FrameSlotKind.Object);
-        return builder.build();
-    }
 
     private SourceSection section(int pos) {
         int len = source.getLength();
@@ -147,28 +161,49 @@ public final class Translator {
 
     private Resolved resolve(String name, Scope scope, int pos) {
         List<int[]> withs = null;
+        int depth = 0;
+        boolean outward = false;
         for (Scope s = scope; s != null; s = s.parent) {
-            int depth = scope.fn.level - s.fn.level;
             if (s.withSlot >= 0) {
                 if (withs == null) withs = new ArrayList<>();
-                withs.add(new int[] {depth, s.withSlot});
+                withs.add(new int[] {depth, s.withSlot, outward ? 1 : 0});
             } else {
                 Integer slot = s.vars.get(name);
-                if (slot != null) return new Local(depth, slot, s);
+                if (slot != null) return new Local(depth, slot, s, outward);
+            }
+            // Leaving a function: its environment is a step, if it has one.
+            if (s.parent != null && s.parent.fn != s.fn) {
+                if (s.fn == scope.fn) {
+                    depth++;
+                    outward = true;
+                } else if (s.fn.hasEnv()) {
+                    depth++;
+                }
             }
         }
         // REPL variables and builtins shadow `with`, exactly like in CppNix where they are lexical scopes.
-        if (replNames != null && replNames.contains(name)) return new ReplVar(scope.fn.level);
+        if (replNames != null && replNames.contains(name)) return new ReplVar(depth, outward);
         int global = globals.indexOf(name);
         if (global >= 0) return new Global(global, globals.constant(global));
         if (withs == null) throw error("undefined variable '" + name + "'", pos);
         int[] depths = new int[withs.size()];
         int[] slots = new int[withs.size()];
+        boolean[] outwards = new boolean[withs.size()];
         for (int i = 0; i < depths.length; i++) {
             depths[i] = withs.get(i)[0];
             slots[i] = withs.get(i)[1];
+            outwards[i] = withs.get(i)[2] == 1;
         }
-        return new WithVar(depths, slots);
+        return new WithVar(depths, slots, outwards);
+    }
+
+    private NixNode withLookup(String name, WithVar w, Scope s) {
+        WithLookupNode node = new WithLookupNode(name, w.depths(), w.slots());
+        for (int i = 0; i < w.outward().length; i++) {
+            int index = i;
+            if (w.outward()[i]) s.fn.outward.add(() -> node.shallower(index));
+        }
+        return node;
     }
 
     // ------------------------------------------------------ strict positions
@@ -224,9 +259,17 @@ public final class Translator {
     private NixNode variable(Var v, Scope s) {
         return switch (resolve(v.name(), s, v.pos())) {
             case Global g -> global(g);
-            case Local l -> new ReadVarNode(l.depth(), l.slot());
-            case WithVar w -> new WithLookupNode(v.name(), w.depths(), w.slots());
-            case ReplVar r -> new ReplVarNode(r.depth(), v.name());
+            case Local l -> {
+                ReadVarNode node = new ReadVarNode(l.depth(), l.slot());
+                if (l.outward()) s.fn.outward.add(node::shallower);
+                yield node;
+            }
+            case WithVar w -> withLookup(v.name(), w, s);
+            case ReplVar r -> {
+                ReplVarNode node = new ReplVarNode(r.depth(), v.name());
+                if (r.outward()) s.fn.outward.add(node::shallower);
+                yield node;
+            }
         };
     }
 
@@ -299,7 +342,11 @@ public final class Translator {
             case Var v -> {
                 switch (resolve(v.name(), s, v.pos())) {
                     case Global g -> { return global(g); }
-                    case Local l -> { return new ReadRawVarNode(l.depth(), l.slot()); }
+                    case Local l -> {
+                        ReadRawVarNode node = new ReadRawVarNode(l.depth(), l.slot());
+                        if (l.outward()) s.fn.outward.add(node::shallower);
+                        return node;
+                    }
                     case WithVar w -> { return thunk(e, s); }
                     case ReplVar r -> { return thunk(e, s); }
                 }
@@ -322,11 +369,12 @@ public final class Translator {
     private NixNode thunk(Expr e, Scope s) {
         if (!checked) check(e, s);
         return new MakeThunkNode(new Deferred(() -> {
-            Fn fn = new Fn(s.fn);
+            Fn fn = new Fn(false);
             NixNode body = strict(e, new Scope(s, fn, Map.of(), -1));
+            finish(fn);
             SourceSection sec = section(e.pos());
             String name = "thunk@" + source.getName() + ":" + sec.getStartLine() + ":" + sec.getStartColumn();
-            return new NixRootNode(language, descriptor(fn), body, name, sec).getCallTarget();
+            return new NixRootNode(language, fn.envSize(), false, body, name, sec).getCallTarget();
         }));
     }
 
@@ -376,7 +424,7 @@ public final class Translator {
     }
 
     private com.oracle.truffle.api.RootCallTarget lambdaBody(Lambda l, Scope s, String name) {
-        Fn fn = new Fn(s.fn);
+        Fn fn = new Fn(false);
         Map<String, Integer> vars = new HashMap<>();
         Scope ls = new Scope(s, fn, vars, -1);
         NixNode prologue;
@@ -410,7 +458,8 @@ public final class Translator {
         }
         NixNode body = strict(l.body(), ls);
         NixNode full = new FunctionNodes.Body(prologue, body);
-        return new NixRootNode(language, descriptor(fn), full, name, section(l.pos())).getCallTarget();
+        finish(fn);
+        return new NixRootNode(language, fn.envSize(), false, full, name, section(l.pos())).getCallTarget();
     }
 
     private NixNode with(With w, Scope s) {
@@ -579,7 +628,7 @@ public final class Translator {
 
     private void checkLambda(Lambda l, Scope s) {
         Map<String, Integer> vars = new HashMap<>();
-        Scope ls = new Scope(s, new Fn(s.fn), vars, -1);
+        Scope ls = new Scope(s, new Fn(false), vars, -1);
         if (l.formals() == null) {
             vars.put(l.arg(), 0);
         } else {

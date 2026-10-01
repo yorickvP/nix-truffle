@@ -29,7 +29,7 @@ public final class Thunk {
     private static final int DONE = 2;
 
     private RootCallTarget target;
-    /** A {@code MaterializedFrame} for source thunks, an {@code Object[]} for builtin applications. */
+    /** The environment for source thunks (see {@code NixNode}), {@code [f, args...]} for builtin applications. */
     private Object env;
     private Object value;
     private int state;

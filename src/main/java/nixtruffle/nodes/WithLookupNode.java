@@ -1,7 +1,6 @@
 package nixtruffle.nodes;
 
 import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
-import com.oracle.truffle.api.frame.Frame;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.nodes.ExplodeLoop;
 import nixtruffle.runtime.NixException;
@@ -26,14 +25,19 @@ public final class WithLookupNode extends NixNode {
         }
     }
 
+    /** See {@link ReadVarNode#shallower}: for the {@code i}th {@code with}. */
+    public void shallower(int i) {
+        depths[i]--;
+    }
+
     @Override
     @ExplodeLoop
     public Object execute(VirtualFrame frame) {
         for (int i = 0; i < depths.length; i++) {
-            Frame f = frameAt(frame, depths[i]);
-            Object raw = f.getObject(slots[i]);
+            Object[] e = envAt(frame, depths[i]);
+            Object raw = e[slots[i]];
             Object env = envForces[i].execute(raw);
-            if (env != raw) f.setObject(slots[i], env);
+            if (env != raw) e[slots[i]] = env;
             Object value = steps[i].execute(env, name);
             if (value == SelectStepNode.NOT_ATTRS) throw NixException.typeError(env, "a set", this);
             if (value != SelectStepNode.MISSING) return value;

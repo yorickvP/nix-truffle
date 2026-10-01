@@ -1,7 +1,6 @@
 package nixtruffle.nodes;
 
 import com.oracle.truffle.api.dsl.TypeSystemReference;
-import com.oracle.truffle.api.frame.Frame;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.nodes.ExplodeLoop;
 import com.oracle.truffle.api.nodes.Node;
@@ -15,9 +14,11 @@ import nixtruffle.runtime.NixException;
  * normal form; nodes the translator puts in lazy positions ({@link MakeThunkNode},
  * {@link ReadRawVarNode}, constants, lambdas) may return a {@link nixtruffle.runtime.Thunk}.
  *
- * <p>Frame layout: {@code arguments[0]} is the lexically enclosing frame (a MaterializedFrame, or
- * absent for a file's top level), {@code arguments[1]} a lambda's argument. Every lambda body and
- * every thunk body is its own root; variables are addressed as (depth, slot).
+ * <p>Every lambda body and every thunk body is its own root ({@link NixRootNode}), called with the
+ * environment it closes over as {@code arguments[0]} (and a lambda's argument as {@code
+ * arguments[1]}). A root's environment ({@link #env}) is an {@code Object[]} of its local
+ * variables after the enclosing environment at index 0, or the enclosing environment itself if it
+ * has no locals; variables are addressed as (depth, slot) in that chain.
  */
 @TypeSystemReference(NixTypes.class)
 @NodeInfo(language = "Nix")
@@ -55,10 +56,16 @@ public abstract class NixNode extends Node {
         this.sourceSection = section;
     }
 
+    /** The running root's environment. */
+    protected static Object[] env(VirtualFrame frame) {
+        return (Object[]) frame.getObjectStatic(NixRootNode.ENV_SLOT);
+    }
+
+    /** The environment {@code depth} levels out. */
     @ExplodeLoop
-    protected static Frame frameAt(VirtualFrame frame, int depth) {
-        Frame f = frame;
-        for (int i = 0; i < depth; i++) f = (Frame) f.getArguments()[0];
-        return f;
+    protected static Object[] envAt(VirtualFrame frame, int depth) {
+        Object[] env = env(frame);
+        for (int i = 0; i < depth; i++) env = (Object[]) env[0];
+        return env;
     }
 }

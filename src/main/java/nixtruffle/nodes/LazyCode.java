@@ -2,7 +2,6 @@ package nixtruffle.nodes;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.RootCallTarget;
-import com.oracle.truffle.api.frame.MaterializedFrame;
 
 /**
  * A thunk or lambda body whose nodes are built when it is first needed. Most of the code an
@@ -34,5 +33,5 @@ public abstract class LazyCode {
     }
 
     /** What a thunk of a body that hasn't been built closes over (see {@link LazyThunkRootNode}). */
-    public record Env(LazyCode code, MaterializedFrame frame) {}
+    public record Env(LazyCode code, Object[] env) {}
 }
