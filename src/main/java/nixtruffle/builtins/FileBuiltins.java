@@ -42,8 +42,8 @@ public final class FileBuiltins {
     enum Symlinks { NONE, ANCESTORS, FULL }
 
     static void install() {
-        Builtins.def("import", 1, a -> importPath(a[0], null));
-        Builtins.def("scopedImport", 2, a -> importPath(a[1], a[0]));
+        Builtins.def("import", 1, a -> importPath(a[0], null, false));
+        Builtins.def("scopedImport", 2, a -> importPath(a[1], a[0], false));
         Builtins.def("readFile", 1, a -> {
             String path = realisePath(a[0], Symlinks.FULL);
             String s;
@@ -248,9 +248,12 @@ public final class FileBuiltins {
 
     // -------------------------------------------------------------- import
 
-    /** Evaluates a file like {@code import} (the launcher's FILE arguments). */
+    /**
+     * Evaluates a file like {@code import} (the launcher's FILE arguments), but again every time,
+     * so that {@code --repeat} measures evaluation rather than the memoized result.
+     */
     static Object importFile(String path) {
-        return importPath(new NixPath(NixPath.canonicalize(path)), null);
+        return importPath(new NixPath(NixPath.canonicalize(path)), null, true);
     }
 
     /**
@@ -279,8 +282,8 @@ public final class FileBuiltins {
         return result;
     }
 
-    /** {@code import} and {@code scopedImport}. */
-    private static Object importPath(Object pathArg, Object scope) {
+    /** {@code import} and {@code scopedImport}; {@code fresh} evaluates the file even if it has been already. */
+    private static Object importPath(Object pathArg, Object scope, boolean fresh) {
         NixContext ctx = NixContext.get(null);
         String path = realisePath(pathArg, Symlinks.NONE);
         if (path.startsWith("/__corepkgs__/")) return ctx.corepkgValue(path.substring("/__corepkgs__/".length()));
@@ -292,7 +295,7 @@ public final class FileBuiltins {
             NixAttrs s = attrs(scope);
             return parseFile(ctx, file, new HashSet<>(Arrays.asList(s.keys))).call(s);
         }
-        Object cached = ctx.importCache.get(file);
+        Object cached = fresh ? null : ctx.importCache.get(file);
         if (cached != null) return cached;
         Object result;
         String language = ctx.settings.getBool("polyglot") ? foreignLanguage(file) : null;
