@@ -46,20 +46,23 @@ public final class NixAttrs extends NixObject {
     /**
      * For big sets that are looked up often (nixpkgs, {@code callPackage}'s {@code intersectAttrs}
      * against it): the key indices (plus one) in an open-addressing hash table, built after a few
-     * binary searches, so a lookup compares one string instead of a dozen. Sets that share a key
-     * array share it.
+     * binary searches, so a lookup compares one string instead of a dozen or more. Until then, a
+     * one-element array counting the lookups. Sets that share a key array share the table. Only
+     * for big sets, once they have been looked up about as often as building the table costs in
+     * binary searches: a NixOS evaluation makes hundreds of package sets, most of them looked up a
+     * few times.
      */
     private int[] index;
-    private int lookups;
-    private static final int INDEX_MIN_SIZE = 32;
-    private static final int INDEX_AFTER_LOOKUPS = 8;
+    private static final int INDEX_MIN_SIZE = 1024;
 
     /** The index of {@code key}, or a negative number. */
     @TruffleBoundary
     public int indexOf(String key) {
         int[] t = index;
-        if (t == null) {
-            if (keys.length < INDEX_MIN_SIZE || ++lookups < INDEX_AFTER_LOOKUPS) return Arrays.binarySearch(keys, key);
+        if (t == null || t.length == 1) {
+            if (keys.length < INDEX_MIN_SIZE) return Arrays.binarySearch(keys, key);
+            if (t == null) index = t = new int[1];
+            if (++t[0] < keys.length >> 5) return Arrays.binarySearch(keys, key);
             index = t = buildIndex(keys);
         }
         int mask = t.length - 1;
@@ -72,8 +75,15 @@ public final class NixAttrs extends NixObject {
         }
     }
 
+    /** {@link #indexOf} without counting towards a table (for {@code //}'s own lookups). */
+    private int find(String key) {
+        int[] t = index;
+        return t == null || t.length == 1 ? Arrays.binarySearch(keys, key) : indexOf(key);
+    }
+
     private static int[] buildIndex(String[] keys) {
-        int[] t = new int[Integer.highestOneBit(keys.length) << 2];
+        // At most two thirds full.
+        int[] t = new int[Integer.highestOneBit(keys.length + (keys.length >> 1)) << 1];
         int mask = t.length - 1;
         for (int i = 0; i < keys.length; i++) {
             int h = spread(keys[i].hashCode()) & mask;
@@ -91,7 +101,7 @@ public final class NixAttrs extends NixObject {
     /** A set with {@code keys} (the same array as this one's): it shares the index. */
     private NixAttrs sameKeys(Object[] values, Object[] positions) {
         NixAttrs a = new NixAttrs(keys, values, positions);
-        a.index = index;
+        if (index != null && index.length > 1) a.index = index;
         return a;
     }
 
@@ -210,7 +220,7 @@ public final class NixAttrs extends NixObject {
         int[] at = new int[sk.length];
         int added = 0;
         for (int j = 0; j < sk.length; j++) {
-            int i = big.indexOf(sk[j]);
+            int i = big.find(sk[j]);
             // A key to insert: where.
             if (i < 0) {
                 i = Arrays.binarySearch(bk, sk[j]);
