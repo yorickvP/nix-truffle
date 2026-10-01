@@ -16,17 +16,23 @@ import nixtruffle.runtime.NixLambda;
 public final class FunctionNodes {
     private FunctionNodes() {}
 
+    /** A lambda expression; its body is built when the first closure is made (see {@link LazyCode}). */
     public static final class Lambda extends NixNode {
-        private final RootCallTarget target;
+        private final LazyCode code;
+        @CompilationFinal private RootCallTarget target;
         private final NixLambda.Info info;
 
-        public Lambda(RootCallTarget target, NixLambda.Info info) {
-            this.target = target;
+        public Lambda(LazyCode code, NixLambda.Info info) {
+            this.code = code;
             this.info = info;
         }
 
         @Override
         public Object execute(VirtualFrame frame) {
+            if (target == null) {
+                CompilerDirectives.transferToInterpreterAndInvalidate();
+                target = code.target();
+            }
             return new NixLambda(target, frame.materialize(), info);
         }
     }

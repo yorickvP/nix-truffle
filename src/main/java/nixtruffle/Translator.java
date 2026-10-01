@@ -16,6 +16,7 @@ import nixtruffle.nodes.FunctionNodes;
 import nixtruffle.nodes.GlobalReadNode;
 import nixtruffle.nodes.HasAttrNode;
 import nixtruffle.nodes.InterpolationNode;
+import nixtruffle.nodes.LazyCode;
 import nixtruffle.nodes.ListNode;
 import nixtruffle.nodes.LiteralNodes.Constant;
 import nixtruffle.nodes.LiteralNodes.DoubleLiteral;
@@ -61,6 +62,9 @@ import java.util.Map;
  * <p>Laziness is decided here, like CppNix's {@code maybeThunk} (and thc's "already evaluated"
  * proofs): constants, lambdas and references to lexical variables are cheap and are never wrapped
  * in a thunk; a variable reference in a lazy position shares the binding's existing thunk.
+ *
+ * <p>Thunk and lambda bodies are only {@link #check checked} for errors at first, and built when
+ * first needed (see {@link LazyCode}): most of them never are.
  */
 public final class Translator {
     private final NixLanguage language;
@@ -72,6 +76,8 @@ public final class Translator {
     /** The names in the base environment, resolved before {@code with}. */
     private final GlobalScope globals;
     private int hiddenCounter;
+    /** While building a deferred body: it has been checked already, with everything in it. */
+    private boolean checked;
 
     /** A root being built: its nesting level and number of frame slots. */
     private static final class Fn {
@@ -140,10 +146,11 @@ public final class Translator {
     }
 
     private Resolved resolve(String name, Scope scope, int pos) {
-        List<int[]> withs = new ArrayList<>();
+        List<int[]> withs = null;
         for (Scope s = scope; s != null; s = s.parent) {
             int depth = scope.fn.level - s.fn.level;
             if (s.withSlot >= 0) {
+                if (withs == null) withs = new ArrayList<>();
                 withs.add(new int[] {depth, s.withSlot});
             } else {
                 Integer slot = s.vars.get(name);
@@ -154,7 +161,7 @@ public final class Translator {
         if (replNames != null && replNames.contains(name)) return new ReplVar(scope.fn.level);
         int global = globals.indexOf(name);
         if (global >= 0) return new Global(global, globals.constant(global));
-        if (withs.isEmpty()) throw error("undefined variable '" + name + "'", pos);
+        if (withs == null) throw error("undefined variable '" + name + "'", pos);
         int[] depths = new int[withs.size()];
         int[] slots = new int[withs.size()];
         for (int i = 0; i < depths.length; i++) {
@@ -313,29 +320,70 @@ public final class Translator {
     }
 
     private NixNode thunk(Expr e, Scope s) {
-        Fn fn = new Fn(s.fn);
-        NixNode body = strict(e, new Scope(s, fn, Map.of(), -1));
-        SourceSection sec = section(e.pos());
-        String name = "thunk@" + source.getName() + ":" + sec.getStartLine() + ":" + sec.getStartColumn();
-        NixRootNode root = new NixRootNode(language, descriptor(fn), body, name, sec);
-        MakeThunkNode node = new MakeThunkNode(root.getCallTarget());
-        node.setSourceSection(sec);
-        return node;
+        if (!checked) check(e, s);
+        return new MakeThunkNode(new Deferred(() -> {
+            Fn fn = new Fn(s.fn);
+            NixNode body = strict(e, new Scope(s, fn, Map.of(), -1));
+            SourceSection sec = section(e.pos());
+            String name = "thunk@" + source.getName() + ":" + sec.getStartLine() + ":" + sec.getStartColumn();
+            return new NixRootNode(language, descriptor(fn), body, name, sec).getCallTarget();
+        }));
+    }
+
+    /** A body built later by this translator, which has checked it already. */
+    private final class Deferred extends LazyCode {
+        private java.util.function.Supplier<com.oracle.truffle.api.RootCallTarget> body;
+
+        Deferred(java.util.function.Supplier<com.oracle.truffle.api.RootCallTarget> body) {
+            this.body = body;
+        }
+
+        @Override
+        protected com.oracle.truffle.api.RootCallTarget build() {
+            synchronized (Translator.this) {
+                boolean was = checked;
+                checked = true;
+                try {
+                    return body.get();
+                } finally {
+                    checked = was;
+                    body = null;
+                }
+            }
+        }
     }
 
     // ----------------------------------------------------- binding constructs
 
     private NixNode lambda(Lambda l, Scope s, String name) {
+        if (!checked) checkLambda(l, s);
+        NixLambda.Info info;
+        if (l.formals() == null) {
+            info = new NixLambda.Info(name, l.arg(), null, null, null, false, false);
+        } else {
+            List<Formal> formals = l.formals().formals();
+            String[] names = new String[formals.size()];
+            boolean[] hasDefault = new boolean[names.length];
+            Object[] formalPositions = new Object[names.length];
+            for (int i = 0; i < names.length; i++) {
+                names[i] = formals.get(i).name();
+                hasDefault[i] = formals.get(i).fallback() != null;
+                formalPositions[i] = pos(formals.get(i).pos());
+            }
+            info = new NixLambda.Info(name, l.arg(), names, hasDefault, formalPositions, true, l.formals().ellipsis());
+        }
+        return new FunctionNodes.Lambda(new Deferred(() -> lambdaBody(l, s, name)), info);
+    }
+
+    private com.oracle.truffle.api.RootCallTarget lambdaBody(Lambda l, Scope s, String name) {
         Fn fn = new Fn(s.fn);
         Map<String, Integer> vars = new HashMap<>();
         Scope ls = new Scope(s, fn, vars, -1);
         NixNode prologue;
-        NixLambda.Info info;
         if (l.formals() == null) {
             int slot = fn.alloc();
             vars.put(l.arg(), slot);
             prologue = new FunctionNodes.BindArg(slot);
-            info = new NixLambda.Info(name, l.arg(), null, null, null, false, false);
         } else {
             int argSlot = -1;
             if (l.arg() != null) {
@@ -345,10 +393,8 @@ public final class Translator {
             List<Formal> formals = l.formals().formals();
             String[] names = new String[formals.size()];
             int[] slots = new int[names.length];
-            boolean[] hasDefault = new boolean[names.length];
             for (int i = 0; i < names.length; i++) {
                 names[i] = formals.get(i).name();
-                if (vars.containsKey(names[i])) throw error("duplicate formal function argument '" + names[i] + "'", l.pos());
                 slots[i] = fn.alloc();
                 vars.put(names[i], slots[i]);
             }
@@ -356,20 +402,15 @@ public final class Translator {
             List<NixNode> defaults = new ArrayList<>();
             for (int i = 0; i < names.length; i++) {
                 Expr fallback = formals.get(i).fallback();
-                hasDefault[i] = fallback != null;
                 defaultIndex[i] = fallback == null ? -1 : defaults.size();
                 if (fallback != null) defaults.add(lazyBinding(fallback, ls, names[i]));
             }
             prologue = new FunctionNodes.BindFormals(name, names, slots, defaultIndex, defaults.toArray(NixNode[]::new),
                     l.formals().ellipsis(), argSlot);
-            Object[] formalPositions = new Object[names.length];
-            for (int i = 0; i < names.length; i++) formalPositions[i] = pos(formals.get(i).pos());
-            info = new NixLambda.Info(name, l.arg(), names, hasDefault, formalPositions, true, l.formals().ellipsis());
         }
         NixNode body = strict(l.body(), ls);
         NixNode full = new FunctionNodes.Body(prologue, body);
-        NixRootNode root = new NixRootNode(language, descriptor(fn), full, name, section(l.pos()));
-        return new FunctionNodes.Lambda(root.getCallTarget(), info);
+        return new NixRootNode(language, descriptor(fn), full, name, section(l.pos())).getCallTarget();
     }
 
     private NixNode with(With w, Scope s) {
@@ -450,6 +491,158 @@ public final class Translator {
         Object[] dynamic = new Object[nb.dynamicPos.size()];
         for (int i = 0; i < dynamic.length; i++) dynamic[i] = pos(nb.dynamicPos.get(i));
         return new Object[][] {keys.length == 0 || statics[0] == null ? null : statics, dynamic};
+    }
+
+    // --------------------------------------------------------------- checking
+
+    /**
+     * Throws the error translating {@code e} would (an undefined variable, an attribute defined
+     * twice, a duplicate formal), in the same order, without building anything. Deferred bodies
+     * are checked when they are deferred, so a file's errors are found when it is parsed, as in
+     * CppNix, although most of it is never built.
+     */
+    private void check(Expr e, Scope s) {
+        switch (e) {
+            case Int i -> {}
+            case Flt f -> {}
+            case PathLit p -> {}
+            case CurPos c -> {}
+            case Str str -> checkParts(str.parts(), s);
+            case PathInterp p -> checkParts(p.rest(), s);
+            case SearchPath sp -> {
+                checkVar("__findFile", s, sp.pos());
+                checkVar("__nixPath", s, sp.pos());
+            }
+            case Var v -> checkVar(v.name(), s, v.pos());
+            case Select sel -> {
+                check(sel.target(), s);
+                checkKeys(sel.path(), s);
+                if (sel.fallback() != null) check(sel.fallback(), s);
+            }
+            case HasAttr h -> {
+                check(h.target(), s);
+                checkKeys(h.path(), s);
+            }
+            case App a -> {
+                check(a.fn(), s);
+                for (Expr arg : a.args()) check(arg, s);
+            }
+            case Lambda l -> checkLambda(l, s);
+            case Let l -> checkLet(l, s);
+            case Attrs a -> checkAttrs(a, s);
+            case ListE l -> {
+                for (Expr item : l.items()) check(item, s);
+            }
+            case If i -> {
+                check(i.cond(), s);
+                check(i.then(), s);
+                check(i.otherwise(), s);
+            }
+            case With w -> {
+                check(w.env(), s);
+                check(w.body(), new Scope(s, s.fn, Map.of(), 0));
+            }
+            case Assert a -> {
+                check(a.cond(), s);
+                check(a.body(), s);
+            }
+            case BinOp b -> {
+                check(b.left(), s);
+                check(b.right(), s);
+            }
+            case Not n -> check(n.operand(), s);
+            case Neg n -> check(n.operand(), s);
+        }
+    }
+
+    /** What {@link #resolve} checks: that the name is bound, or that a {@code with} may bind it. */
+    private void checkVar(String name, Scope scope, int pos) {
+        boolean with = false;
+        for (Scope s = scope; s != null; s = s.parent) {
+            if (s.withSlot >= 0) {
+                with = true;
+            } else if (s.vars.containsKey(name)) {
+                return;
+            }
+        }
+        if (with || replNames != null && replNames.contains(name) || globals.indexOf(name) >= 0) return;
+        throw error("undefined variable '" + name + "'", pos);
+    }
+
+    private void checkParts(List<Object> parts, Scope s) {
+        for (Object part : parts) if (part instanceof Expr x) check(x, s);
+    }
+
+    private void checkKeys(List<AttrKey> path, Scope s) {
+        for (AttrKey k : path) if (k.name() == null) check(k.expr(), s);
+    }
+
+    private void checkLambda(Lambda l, Scope s) {
+        Map<String, Integer> vars = new HashMap<>();
+        Scope ls = new Scope(s, new Fn(s.fn), vars, -1);
+        if (l.formals() == null) {
+            vars.put(l.arg(), 0);
+        } else {
+            if (l.arg() != null) vars.put(l.arg(), 0);
+            for (Formal f : l.formals().formals()) {
+                if (vars.containsKey(f.name())) throw error("duplicate formal function argument '" + f.name() + "'", l.pos());
+                vars.put(f.name(), 0);
+            }
+            for (Formal f : l.formals().formals()) if (f.fallback() != null) check(f.fallback(), ls);
+        }
+        check(l.body(), ls);
+    }
+
+    private void checkLet(Let let, Scope s) {
+        Normalized nb = normalize(let.bindings());
+        if (!nb.dynamic.isEmpty()) throw error("dynamic attributes not allowed in let", let.pos());
+        Map<String, Integer> vars = new HashMap<>();
+        Scope ls = new Scope(s, s.fn, vars, -1);
+        checkGroup(nb, s, ls, vars);
+        check(let.body(), ls);
+    }
+
+    private void checkGroup(Normalized nb, Scope outer, Scope group, Map<String, Integer> vars) {
+        for (String name : nb.statics.keySet()) vars.put(name, 0);
+        for (Hidden h : nb.hidden) vars.put(h.name, 0);
+        for (Hidden h : nb.hidden) check(h.expr, group);
+        for (Map.Entry<String, Entry> e : nb.statics.entrySet()) checkEntry(e.getValue(), e.getKey(), outer, group);
+    }
+
+    private void checkEntry(Entry entry, String name, Scope outer, Scope scope) {
+        if (entry.inheritVar) {
+            checkVar(name, outer, entry.pos);
+        } else {
+            check(entry.value(), scope);
+        }
+    }
+
+    private void checkAttrs(Attrs a, Scope s) {
+        Normalized nb = normalize(a.bindings());
+        if (a.rec()) {
+            Map<String, Integer> vars = new HashMap<>();
+            Scope rs = new Scope(s, s.fn, vars, -1);
+            checkGroup(nb, s, rs, vars);
+            for (Expr[] d : nb.dynamic) {
+                check(d[0], rs);
+                check(d[1], rs);
+            }
+            return;
+        }
+        Scope vs = s;
+        if (!nb.hidden.isEmpty()) {
+            Map<String, Integer> vars = new HashMap<>();
+            vs = new Scope(s, s.fn, vars, -1);
+            for (Hidden h : nb.hidden) {
+                vars.put(h.name, 0);
+                check(h.expr, s);
+            }
+        }
+        for (String key : nb.statics.keySet().stream().sorted().toList()) checkEntry(nb.statics.get(key), key, s, vs);
+        for (Expr[] d : nb.dynamic) {
+            check(d[0], s);
+            check(d[1], s);
+        }
     }
 
     // ------------------------------------------------ binding normalization

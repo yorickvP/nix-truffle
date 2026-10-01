@@ -61,6 +61,7 @@ public final class NixLanguage extends TruffleLanguage<NixContext> {
     }
 
     private RootCallTarget applyThunkTarget;
+    private RootCallTarget lazyThunkTarget;
 
     /**
      * The language, and so parsed code, is shared by all contexts of an engine, whatever their
@@ -195,6 +196,15 @@ public final class NixLanguage extends TruffleLanguage<NixContext> {
     /** The current directory, as a byte string. */
     public static String cwd() {
         return Bytes.fromJava(Proc.cwd());
+    }
+
+    /** The body of thunks whose code hasn't been built (see {@link nixtruffle.nodes.LazyCode}). */
+    public RootCallTarget lazyThunkTarget() {
+        if (lazyThunkTarget == null) {
+            CompilerDirectives.transferToInterpreterAndInvalidate();
+            lazyThunkTarget = new nixtruffle.nodes.LazyThunkRootNode(this).getCallTarget();
+        }
+        return lazyThunkTarget;
     }
 
     public RootCallTarget applyThunkTarget() {
