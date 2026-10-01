@@ -40,7 +40,7 @@ public final class Settings {
         values.put("polyglot", "true");
         values.put("trace-verbose", "false");
         values.put("max-call-depth", "10000");
-        values.put("eval-cores", "1");
+        values.put("eval-cores", "0");
     }
 
     /** The settings from the configuration files and {@code $NIX_CONFIG}. */

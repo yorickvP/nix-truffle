@@ -68,6 +68,16 @@ public final class Parallel {
     /** Whether any context evaluates in parallel: until one does, {@link #ahead} only reads this. */
     private static volatile boolean enabled;
 
+    /**
+     * The threads for {@code eval-cores = 0} (the default): one per core, but at most one per
+     * gigabyte the heap may grow to ({@code -Xmx}, or three quarters of the memory, see
+     * bin/nix-truffle), since threads evaluating side by side keep more alive at once.
+     */
+    public static int defaultThreads() {
+        long gigabytes = Runtime.getRuntime().maxMemory() >> 30;
+        return (int) Math.max(1, Math.min(Runtime.getRuntime().availableProcessors(), gigabytes));
+    }
+
     public Parallel(NixContext ctx, int workers) {
         this.ctx = ctx;
         this.workers = workers;

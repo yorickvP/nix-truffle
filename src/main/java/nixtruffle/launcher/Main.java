@@ -15,29 +15,61 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * {@code nix-truffle [options] (FILE... | -E EXPR)}: evaluates and prints like
- * {@code nix-instantiate --eval --strict}. Without inputs (or with {@code --repl}) it starts a REPL.
- *
- * <pre>
- *   -E, --expr EXPR     evaluate EXPR instead of a file ('<nixpkgs>' also works as a file)
- *   -A, --attr PATH     select an attribute (functions along the path are auto-called)
- *   --arg NAME EXPR     argument for auto-called functions; --argstr NAME STRING likewise
- *   -I PATH             add to the lookup path (PATH or PREFIX=PATH)
- *   --option NAME VALUE, --extra-experimental-features FEATURES
- *                       settings, as in nix.conf
- *   --instantiate       like nix-instantiate: write the derivations to the store, print .drv paths
- *   --read-only         with --instantiate: only compute and print the .drv paths
- *   --read-write-mode   evaluation may write to the store (evaluation alone doesn't, by default)
- *   --repeat N          evaluate N times (to watch the JIT warm up), print the last result
- *   --time              print the time of every evaluation to stderr
- *   --test              one line per input; errors are printed as "error"
- *   --pbt-server        speak the nix-pbt evaluation protocol on stdin/stdout
- *   eval [INSTALLABLE]  like `nix eval`: FLAKEREF#ATTRPATH, or --file/--expr (see EvalCommand)
- *   flake lock [DIR]    write DIR's flake.lock, like `nix flake lock`
- * </pre>
+ * The command line: {@code nix-truffle eval}, {@code repl} and {@code flake lock} work like Nix's
+ * (see {@link EvalCommand}, {@link Repl}, {@link FlakeCommand}), and {@code nix-truffle [options]
+ * (FILE... | -E EXPR)} evaluates and prints like {@code nix-instantiate --eval --strict}. See
+ * {@link #HELP}.
  */
 public final class Main {
     private Main() {}
+
+    static final String HELP = """
+            nix-truffle: a Nix evaluator on GraalVM's Truffle
+
+            Usage:
+              nix-truffle eval [OPTION...] [INSTALLABLE]
+                  Evaluate, like 'nix eval'. INSTALLABLE is FLAKEREF[#ATTRPATH] (default '.'), or
+                  an attribute path into --file FILE or --expr EXPR.
+              nix-truffle repl [OPTION...] [FILE | FLAKEREF...]
+                  Evaluate interactively, like 'nix repl'; files are loaded as with :l, flakes
+                  as with :lf.
+              nix-truffle flake lock [FLAKEREF]
+                  Create or update a flake's lock file, like 'nix flake lock'.
+              nix-truffle [OPTION...] (FILE... | -E EXPR)
+                  Evaluate and print, like 'nix-instantiate --eval --strict'.
+              nix-truffle daemon (status | stop)
+                  The daemon that keeps code warm between commands (NIX_TRUFFLE_DAEMON=1).
+
+            Options for FILE and -E:
+              -A, --attr ATTRPATH        select an attribute (functions on the way are called)
+              --arg NAME EXPR            argument for the functions that are called
+              --argstr NAME STRING       likewise, a string
+              --instantiate              write the derivations, print their paths (like
+                                         nix-instantiate)
+              --read-only                with --instantiate: only print the paths
+
+            Settings, for every command:
+              --option NAME VALUE, --NAME VALUE, --[no-]NAME (booleans),
+              --extra-experimental-features FEATURES, -I PATH (lookup path)
+              They are read from nix.conf and NIX_CONFIG too, as by Nix. Settings of nix-truffle's
+              own: eval-cores (threads; default 0, a thread per core and per GB of heap) and
+              polyglot (default true: builtins.polyglotEval and import of other languages).
+
+            Environment:
+              NIX_TRUFFLE_DAEMON=1       run commands in a daemon that keeps code warm
+              NIX_TRUFFLE_JAVA_OPTS      options for the JVM (a GC option replaces nix-truffle's)
+
+            -h, --help shows this, 'nix-truffle COMMAND --help' a command's; --version the version.
+            """;
+
+    /** The version, from the pom. */
+    static String version() {
+        try (java.io.InputStream in = Main.class.getResourceAsStream("/nixtruffle/version")) {
+            return in == null ? "unknown" : new String(in.readAllBytes(), StandardCharsets.UTF_8).strip();
+        } catch (IOException e) {
+            return "unknown";
+        }
+    }
 
     public static void main(String[] args) throws InterruptedException {
         int[] status = {0};
@@ -127,6 +159,10 @@ public final class Main {
     private record Input(byte[] bytes, boolean isFile, String name) {}
 
     static int run(String[] args) {
+        if (args.length == 0) {
+            System.out.print(HELP);
+            return 0;
+        }
         Options options = new Options();
         List<Input> inputs = new ArrayList<>();
         List<String> attrPaths = new ArrayList<>();
@@ -153,8 +189,19 @@ public final class Main {
                         .replace("\"", "\\\"").replace("${", "\\${")).append("\"; ");
                 case "--instantiate" -> instantiate = true;
                 case "--eval", "--strict", "--json" -> {}
+                case "repl" -> {
+                    return Repl.command(options, java.util.Arrays.copyOfRange(args, i + 1, args.length));
+                }
                 case "--repl" -> {
-                    return repl(options);
+                    return Repl.command(options, new String[0]);
+                }
+                case "daemon" -> {
+                    System.err.println("nix-truffle: there is no daemon without NIX_TRUFFLE_DAEMON=1");
+                    return 1;
+                }
+                case "--version" -> {
+                    System.out.println("nix-truffle " + version());
+                    return 0;
                 }
                 case "--pbt-server" -> pbtServer = true;
                 case "eval" -> {
@@ -164,7 +211,7 @@ public final class Main {
                     return FlakeCommand.run(options, java.util.Arrays.copyOfRange(args, i + 1, args.length));
                 }
                 case "-h", "--help" -> {
-                    System.out.println("usage: nix-truffle [options] (FILE... | -E EXPR | --repl | --pbt-server | eval INSTALLABLE | flake lock)");
+                    System.out.print(HELP);
                     return 0;
                 }
                 default -> {
@@ -180,7 +227,10 @@ public final class Main {
             if (Proc.client() != null) throw new Daemon.RunLocally();
             return PbtServer.run(options.builder(false));
         }
-        if (inputs.isEmpty()) return repl(options);
+        if (inputs.isEmpty()) {
+            System.err.print(HELP);
+            return 1;
+        }
 
         if (attrPaths.isEmpty()) attrPaths.add("");
         boolean hasAutoArgs = autoArgs.length() > 2;
@@ -235,17 +285,6 @@ public final class Main {
             }
         }
         return status;
-    }
-
-    private static int repl(Options options) {
-        // The REPL needs the terminal.
-        if (Proc.client() != null) throw new Daemon.RunLocally();
-        try (Context context = options.build(false)) {
-            return new Repl(context).run();
-        } catch (IOException e) {
-            System.err.println("error: " + e.getMessage());
-            return 1;
-        }
     }
 
     /** Prints a message from the interpreter (a byte string, see {@link Bytes}). */

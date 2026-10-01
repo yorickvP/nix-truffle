@@ -96,6 +96,27 @@ final class CliEval {
         return output;
     }
 
+    /**
+     * What {@code nix-truffle repl} and its {@code :lf} load: an installable as {@code nix eval}
+     * finds it, except that a flake reference without a fragment is the flake's outputs, as
+     * with {@code nix repl}.
+     */
+    static Object replValue(Map<String, Object> cfg) {
+        String cwd = str(cfg, "cwd");
+        NixAttrs autoArgs = autoArgs(Json.arr(cfg.get("autoArgs")), cwd);
+        if (str(cfg, "file") == null && str(cfg, "expr") == null) {
+            Fetcher f = FetchBuiltins.fetcher();
+            String s = str(cfg, "installable");
+            FlakeRef.WithFragment ref = FetchBuiltins.run(() -> FlakeRef.parseWithFragment(f, s, cwd, false, true, false));
+            if (ref.fragment().isEmpty()) {
+                FlakeBuiltins.LockFlags flags = lockFlags(Json.obj(cfg.get("lockFlags")), f, cwd);
+                Object flake = FlakeBuiltins.callFlake(FetchBuiltins.run(() -> FlakeBuiltins.lockFlake(f, ref.ref(), flags)));
+                return Values.attrs(flake).get("outputs");
+            }
+        }
+        return toValue(cfg, autoArgs, cwd);
+    }
+
     /** Parses an expression given on the command line, relative to the current directory. */
     private static Object parse(String text, String cwd) {
         NixContext ctx = NixContext.get(null);

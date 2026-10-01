@@ -56,8 +56,8 @@ public final class NixContext {
         this.pureEval = settings.getBool("pure-eval");
         this.maxCallDepth = (int) Math.min(Integer.MAX_VALUE, settings.getLong("max-call-depth", 10000));
         this.main = new nixtruffle.runtime.EvalThread(maxCallDepth);
-        long cores = settings.getLong("eval-cores", 1);
-        if (cores == 0) cores = Runtime.getRuntime().availableProcessors();
+        long cores = settings.getLong("eval-cores", 0);
+        if (cores == 0) cores = nixtruffle.runtime.Parallel.defaultThreads();
         this.parallel = cores > 1 ? new nixtruffle.runtime.Parallel(this, (int) cores - 1) : null;
     }
 

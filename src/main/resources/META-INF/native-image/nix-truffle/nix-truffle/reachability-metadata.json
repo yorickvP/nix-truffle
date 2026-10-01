@@ -197,6 +197,9 @@
   ],
   "resources": [
     {
+      "glob": "nixtruffle/version"
+    },
+    {
       "glob": "META-INF/graalvm/org.graalvm.polyglot/version"
     },
     {

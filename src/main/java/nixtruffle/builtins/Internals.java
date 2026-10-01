@@ -64,6 +64,8 @@ final class Internals {
         });
         put(m, "importFile", 1, a -> FileBuiltins.importFile(Bytes.of(bytesIn(a[0]))));
         put(m, "nixEval", 1, a -> bytesOut(CliEval.run(nixtruffle.util.Json.obj(nixtruffle.util.Json.parse(Bytes.of(bytesIn(a[0])))))));
+        put(m, "replAdd", 2, a -> attrs(a[0]).update(attrs(a[1])));
+        put(m, "replLoad", 1, a -> CliEval.replValue(nixtruffle.util.Json.obj(nixtruffle.util.Json.parse(Bytes.of(bytesIn(a[0]))))));
         put(m, "flakeLock", 1, a -> {
             FlakeBuiltins.lock(Bytes.of(bytesIn(a[0])));
             return nixtruffle.runtime.NixNull.INSTANCE;

@@ -18,6 +18,10 @@ final class FlakeCommand {
                 i += used;
                 continue;
             }
+            if (args[i].equals("--help") || args[i].equals("-h")) {
+                System.out.println("usage: nix-truffle flake lock [FLAKEREF]\n\nCreates or updates the flake's lock file, like 'nix flake lock' (FLAKEREF defaults to '.').");
+                return 0;
+            }
             if (command == null) command = args[i]; else ref = args[i];
             i++;
         }

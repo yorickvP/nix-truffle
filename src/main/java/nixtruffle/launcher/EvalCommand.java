@@ -176,7 +176,7 @@ final class EvalCommand {
         return args[i];
     }
 
-    private static String autoArg(String kind, String name, String value) {
+    static String autoArg(String kind, String name, String value) {
         return "{\"kind\":" + quote(kind) + ",\"name\":" + quote(name) + ",\"value\":" + quote(value) + "}";
     }
 
@@ -189,7 +189,7 @@ final class EvalCommand {
     }
 
     /** A JSON string literal (the JSON goes to the language as UTF-8). */
-    private static String quote(String s) {
+    static String quote(String s) {
         StringBuilder sb = new StringBuilder("\"");
         for (int i = 0; i < s.length(); i++) {
             char c = s.charAt(i);

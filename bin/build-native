@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 # Build nix-truffle as a native executable, target/nix-truffle, with GraalVM's native-image (in the
 # dev shell; build first with: mvn -q package). Arguments go to native-image: with Oracle GraalVM,
-# for example, --gc=G1 and --pgo-instrument / --pgo=FILE.iprof (see README.md).
+# for example, --gc=G1 and --pgo-instrument / --pgo=FILE.iprof (see README.md). The flake's
+# native package sets NIX_TRUFFLE_CLASSPATH (the jars) and NIX_TRUFFLE_NATIVE_OUT (the executable).
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if [[ ! -f "$root/target/classpath.txt" ]]; then
+if [[ -n "${NIX_TRUFFLE_CLASSPATH:-}" ]]; then
+  cp="$NIX_TRUFFLE_CLASSPATH"
+elif [[ -f "$root/target/classpath.txt" ]]; then
+  cp="$root/target/classes:$(tr ':' '\n' < "$root/target/classpath.txt" | grep -v '\.pom$' | paste -sd:)"
+else
   echo "build-native: not built yet, run 'mvn -q package' in $root" >&2
   exit 1
 fi
-cp="$root/target/classes:$(tr ':' '\n' < "$root/target/classpath.txt" | grep -v '\.pom$' | paste -sd:)"
 ni="$(command -v native-image)"
 opts=()
 # nixpkgs' native-image wrapper adds glibc's static libraries to the library path, and native-image
@@ -19,4 +23,4 @@ if [[ -f "$wrapped" ]]; then
   mapfile -t opts < <(grep -o -- '-H:CLibraryPath=[^ ]*' "$wrapped" | grep -v 'glibc-[^/]*-static')
   ni="$(dirname "$wrapped")/.native-image-wrapped"
 fi
-exec "$ni" "${opts[@]}" -cp "$cp" -o "$root/target/nix-truffle" "$@" nixtruffle.launcher.Main
+exec "$ni" "${opts[@]}" -cp "$cp" -o "${NIX_TRUFFLE_NATIVE_OUT:-$root/target/nix-truffle}" "$@" nixtruffle.launcher.Main

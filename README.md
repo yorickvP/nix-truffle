@@ -33,12 +33,30 @@ $ bin/nix-truffle examples/polyglot.nix
 { callback = 42; described = "hello-2.12 (2 deps)"; fib = 6765; ... }
 ```
 
+## Installing
+
+```sh
+nix run github:yorickvp/nix-truffle -- eval nixpkgs#hello.name   # or: nix profile install ...
+nix build .#default    # bin/nix-truffle on GraalVM CE (with the daemon, see below)
+nix build .#native     # a native executable (see below: fast to start, slow on big evaluations)
+nix flake check        # builds the package and runs a few commands
+```
+
+`nix-truffle` without arguments prints its usage, and `nix-truffle COMMAND --help` a command's:
+
+```sh
+nix-truffle eval [OPTION...] [INSTALLABLE]       # like nix eval
+nix-truffle repl [OPTION...] [FILE | FLAKEREF...] # like nix repl; files are loaded as with :l
+nix-truffle flake lock [FLAKEREF]                # like nix flake lock
+nix-truffle [OPTION...] (FILE... | -E EXPR)      # like nix-instantiate --eval --strict
+```
+
 ## Building and running
 
 ```sh
 nix develop            # GraalVM CE 25 + Maven (see flake.nix)
 mvn -q package         # compiles, and writes target/classpath.txt
-bin/nix-truffle                     # REPL
+bin/nix-truffle repl                # REPL
 bin/nix-truffle FILE.nix            # like nix-instantiate --eval --strict
 bin/nix-truffle -E 'EXPR' [-A attr] [--arg name expr] [--argstr name string]
 bin/nix-truffle --instantiate '<nixpkgs>' -A hello   # like nix-instantiate: writes .drv files
@@ -63,9 +81,12 @@ as in Nix. The ones nix-truffle uses: `experimental-features` (`flakes` enables 
 polyglot false` removes the polyglot builtins and foreign `import`, so that `builtins` looks like
 CppNix's).
 
-The REPL follows `nix repl`: `x = expr` bindings, `:l <nixpkgs>`, `:a`, `:p`, `:t`,
-tab completion of attribute paths, multi-line input, Ctrl-C to interrupt, and errors
-shown inline (`d = «error: oops»;`).
+The REPL follows `nix repl`: `x = expr` bindings, `:l <nixpkgs>`, `:lf FLAKEREF`, `:r`,
+`:a`, `:p`, `:t`, tab completion of attribute paths, multi-line input, Ctrl-C to interrupt, and
+errors shown inline (`d = «error: oops»;`). `nix-truffle repl ARG...` loads each file (or
+`<nixpkgs>`) as with `:l`, calling functions with the `--arg`/`--argstr` arguments, and each
+flake reference as with `:lf` (unlike CppNix 2.35, whose `nix repl` takes only installables);
+with `--file FILE` or `--expr EXPR`, the arguments are attribute paths into it instead.
 
 Like CppNix, calls may only nest `max-call-depth` (10000) deep: "stack overflow; max-call-depth
 exceeded", which `tryEval` doesn't catch. It counts what CppNix counts (calls, the primops
@@ -325,9 +346,9 @@ On this machine (32 cores):
 | | `1+1` | nixpkgs `hello.drvPath` | minimal NixOS `toplevel.drvPath` | a desktop NixOS config |
 |---|---|---|---|---|
 | Lix 2.94 | 0.02 s | 0.22 s | 2.5 s | 12.6 s |
-| JVM, one run (GraalVM CE 25.3) | 0.30 s | 1.0 s | 3.8 s | 9.6 s |
-| daemon, warm | 0.065 s | 0.26 s | 1.6–2.0 s | 6.9 s, also after an edit |
-| native, GraalVM CE (serial GC) | 0.005 s | 0.70 s | 15.5 s | |
+| JVM, one run (GraalVM CE 25.3) | 0.30 s | 1.0 s | 3.2 s | 4.7 s |
+| daemon, warm | 0.065 s | 0.26 s | 1.6–2.0 s | 2.7 s, also after an edit |
+| native, GraalVM CE (serial GC) | 0.005 s | 0.53 s | 11 s | |
 | native, Oracle GraalVM, G1 + PGO | 0.012 s | 0.48 s | 4.55 s | 14 s |
 | native, Oracle GraalVM, serial GC + engine cache of `hello` | | 0.44 s | | |
 
@@ -337,8 +358,9 @@ make the minimal NixOS evaluation any slower either (4.1 s).
 
 ### Parallel evaluation
 
-With `eval-cores` (as in Determinate Nix: 1, the default, evaluates on one thread; 0 uses all
-cores), evaluation uses other threads where a thread is about to force many values anyway
+With `eval-cores` (as in Determinate Nix: 1 evaluates on one thread; 0, the default here, uses
+a thread per core, but at most one per GB of heap), evaluation uses other threads where a
+thread is about to force many values anyway
 (`runtime/Parallel.java`). It offers them to idle workers, and then goes through them in order,
 finding them evaluated or waiting for the worker evaluating one. Those places are:
 
@@ -375,10 +397,11 @@ are already evaluated by then cost a check.
 
 Evaluating all seven NixOS configurations of a flake in one command (`nix-truffle eval --json
 .#nixosConfigurations --apply 'builtins.mapAttrs (n: c: c.config.system.build.toplevel.drvPath)'`)
-takes 9.4 s with `--option eval-cores 8` instead of 26.4 s (Lix: 35.6 s). The largest of them
-alone takes 5.7 s instead of 9.6 s cold, and 3.1 s instead of 6.8 s warm in the daemon. The
-store is used without a lock (computing store paths means hashing sources and derivations), and
-peak memory grows with the work in progress: 8.0 GB for all seven, against 7.1 GB on one core.
+takes 8.7 s with the default (32 threads here; 9.4 s with `--option eval-cores 8`) instead of
+26.4 s on one thread (Lix: 35.6 s). The largest of them alone takes 4.7 s instead of 9.6 s
+cold, and 2.7 s instead of 6.8 s warm in the daemon. The store is used without a lock
+(computing store paths means hashing sources and derivations), and peak memory grows with the
+work in progress: 9.5 GB for all seven (8.0 GB with 8 threads), against 7.1 GB on one.
 `-Dnixtruffle.parallelStats=true` prints what the workers did and how long threads waited.
 
 ## What's there and what isn't
@@ -434,7 +457,8 @@ thunks in it.
 `nix eval` (see above; `NIXPKGS=1` adds cases that fetch nixpkgs); run it with
 `NIX_CONFIG="eval-cores = 8"` too. `NIX=... tests/parallel.sh` evaluates expressions that
 workers share (cycles, errors, `max-call-depth`) with `eval-cores = 8`, several times each, and
-compares them with CppNix. `tests/wasm.sh` tests
+compares them with CppNix. `tests/repl.sh` drives `nix-truffle repl` (files, flakes, `:l`, `:lf`,
+`:r`). `tests/wasm.sh` tests
 `builtins.wasm`, and with `PLUGINS`, `WASI` and `NIX_WASM_RUST` set runs nix-wasm-rust's test
 suite too.
 
