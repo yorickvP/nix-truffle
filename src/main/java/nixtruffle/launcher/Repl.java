@@ -228,7 +228,9 @@ final class Repl {
     }
 
     int run() throws IOException {
-        Terminal terminal = TerminalBuilder.builder().system(true).dumb(true).build();
+        // UTF-8 whatever the platform's charset (a native image's can be ASCII), like Nix's output.
+        Terminal terminal = TerminalBuilder.builder().system(true).dumb(true).encoding(StandardCharsets.UTF_8)
+                .stdinEncoding(StandardCharsets.UTF_8).stdoutEncoding(StandardCharsets.UTF_8).stderrEncoding(StandardCharsets.UTF_8).build();
         DefaultParser parser = new DefaultParser();
         parser.setEscapeChars(null);
         parser.setQuoteChars(new char[0]);
