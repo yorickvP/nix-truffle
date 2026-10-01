@@ -62,10 +62,12 @@ public final class Fs {
     /** A failed system call; {@link #errno} tells which error. */
     public static final class Error extends IOException {
         public final int errno;
+        public final String path;
 
         Error(String what, String path, int errno) {
             super(what + " '" + path + "': " + strerror(errno));
             this.errno = errno;
+            this.path = path;
         }
     }
 

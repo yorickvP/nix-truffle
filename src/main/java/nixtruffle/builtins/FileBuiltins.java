@@ -51,7 +51,7 @@ public final class FileBuiltins {
             try {
                 s = Bytes.of(Fs.readFile(path));
             } catch (IOException e) {
-                throw error(e.getMessage());
+                throw error(e);
             }
             if (s.indexOf('\0') >= 0) throw error("the contents of the file '" + path + "' cannot be represented as a Nix string");
             return NixString.make(s, referencesIn(path, s));
@@ -69,7 +69,7 @@ public final class FileBuiltins {
                 Fs.Stat st = Fs.maybeLstat(path);
                 return st != null && (!mustBeDir || st.isDirectory());
             } catch (IOException e) {
-                throw error(e.getMessage());
+                throw error(e);
             }
         });
         Builtins.def("readDir", 1, a -> {
@@ -87,7 +87,7 @@ public final class FileBuiltins {
                     });
                 }
             } catch (IOException e) {
-                throw error(e.getMessage());
+                throw error(e);
             }
             return NixAttrs.fromMap(map);
         });
@@ -96,7 +96,7 @@ public final class FileBuiltins {
             try {
                 return Fs.lstat(path).typeName();
             } catch (IOException e) {
-                throw error(e.getMessage());
+                throw error(e);
             }
         });
         Builtins.def("hashFile", 2, a -> {
@@ -105,7 +105,7 @@ public final class FileBuiltins {
             try {
                 return Hash.of(algo, Fs.readFile(path)).hex();
             } catch (IOException e) {
-                throw error(e.getMessage());
+                throw error(e);
             }
         });
         Builtins.def("toPath", 1, a -> {
@@ -208,7 +208,7 @@ public final class FileBuiltins {
                 }
             }
         } catch (IOException e) {
-            throw error(e.getMessage());
+            throw error(e);
         }
         return "/" + String.join("/", res);
     }
@@ -231,7 +231,7 @@ public final class FileBuiltins {
             if (st != null && st.isDirectory()) return (path.equals("/") ? "" : path) + "/default.nix";
             return path;
         } catch (IOException e) {
-            throw error(e.getMessage());
+            throw error(e);
         }
     }
 
@@ -253,6 +253,15 @@ public final class FileBuiltins {
      * Evaluates a file like {@code import} (the launcher's FILE arguments), but again every time,
      * so that {@code --repeat} measures evaluation rather than the memoized result.
      */
+    /**
+     * An I/O error, worded as CppNix 2.35 does: reading a path that is missing (or below a file)
+     * fails with its source accessor's "path '...' does not exist".
+     */
+    static NixException error(IOException e) {
+        if (e instanceof Fs.Error f && (f.errno == Fs.ENOENT || f.errno == Fs.ENOTDIR)) return error("path '" + f.path + "' does not exist");
+        return error(e.getMessage());
+    }
+
     static Object importFile(String path) {
         return importPath(new NixPath(NixPath.canonicalize(path)), null, true);
     }
@@ -272,7 +281,7 @@ public final class FileBuiltins {
         try {
             text = Bytes.of(Fs.readFile(file));
         } catch (IOException e) {
-            throw error(e.getMessage());
+            throw error(e);
         }
         var source = com.oracle.truffle.api.source.Source.newBuilder(nixtruffle.NixLanguage.ID, text, file).build();
         if (!(new nixtruffle.parser.Parser(source).parseFile() instanceof nixtruffle.parser.Expr.Attrs)) {
@@ -334,7 +343,7 @@ public final class FileBuiltins {
         try {
             text = Bytes.of(Fs.readFile(file));
         } catch (IOException e) {
-            throw error(e.getMessage());
+            throw error(e);
         }
         return ctx.language.parse(text, file, file, null, scope);
     }
@@ -364,7 +373,7 @@ public final class FileBuiltins {
             try {
                 if (Fs.maybeLstat(res) != null) return res;
             } catch (IOException e) {
-                throw error(e.getMessage());
+                throw error(e);
             }
         }
         if (path.equals("nix/fetchurl.nix")) return "/__corepkgs__/fetchurl.nix";
@@ -400,7 +409,7 @@ public final class FileBuiltins {
                     ctx.printErr("warning: Nix search path entry '" + value + "' does not exist, ignoring");
                 }
             } catch (IOException e) {
-                throw error(e.getMessage());
+                throw error(e);
             }
         }
         ctx.lookupPathCache.put(value, result);
