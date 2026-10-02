@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Writes src/main/resources/nixtruffle/lsp/builtins.json, the documentation of the builtins that
+# the language server shows (hover, completion): CppNix's, from `nix __dump-language`. NIX is
+# CppNix's nix (the reference, 2.35); the texts are CppNix's, LGPL-2.1-or-later. Needs python3.
+set -euo pipefail
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+nix="${NIX:-nix}"
+version="$("$nix" --version)"
+"$nix" __dump-language | python3 -c '
+import json, sys
+dump = json.load(sys.stdin)
+builtins = {name: {"args": b.get("args", []), "doc": b["doc"].replace("@docroot@", "https://nix.dev/manual/nix/latest")} for name, b in sorted(dump.items()) if b.get("doc")}
+json.dump({"source": sys.argv[1] + ", nix __dump-language", "license": "LGPL-2.1-or-later",
+           "builtins": builtins}, sys.stdout, indent=1, sort_keys=True, ensure_ascii=False)
+print()' "$version" > "$root/src/main/resources/nixtruffle/lsp/builtins.json"

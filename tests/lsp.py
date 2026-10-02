@@ -123,7 +123,9 @@ check("no definition from with", c.at("textDocument/definition", main, text, "fr
 
 check("references", [r["range"]["start"]["line"] for r in c.at("textDocument/references", main, text, "foo =")], [2, 7])
 check("hover on a binding", c.at("textDocument/hover", main, text, "foo +")["contents"]["value"], "`foo`: let binding, line 3")
-check("hover on a builtin", c.at("textDocument/hover", main, text, "map (")["contents"]["value"], "`map`: built in (`builtins.map`)")
+check("hover on a builtin", c.at("textDocument/hover", main, text, "map (")["contents"]["value"].startswith("`map f list`: built in\n\nApply the function *f*"), True)
+check("hover on builtins.x", c.at("textDocument/hover", main, text, "length [", 1)["contents"]["value"].startswith("`builtins.length e`\n\nReturn the length of the list *e*."), True)
+check("completion of a builtin, with its doc", [(i["detail"], i["documentation"]["value"][:20]) for i in c.at("textDocument/completion", main, text, "map (", 3) if i["label"] == "map"], [("map f list", "Apply the function *")])
 check("hover from with", c.at("textDocument/hover", main, text, "fromWith")["contents"]["value"], "`fromWith`: from `with`")
 
 

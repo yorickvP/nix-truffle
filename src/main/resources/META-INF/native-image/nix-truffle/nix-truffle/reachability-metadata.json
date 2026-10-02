@@ -200,6 +200,9 @@
       "glob": "nixtruffle/version"
     },
     {
+      "glob": "nixtruffle/lsp/builtins.json"
+    },
+    {
       "glob": "META-INF/graalvm/org.graalvm.polyglot/version"
     },
     {

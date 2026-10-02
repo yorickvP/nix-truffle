@@ -764,7 +764,9 @@ public final class LspServer {
         String text = switch (u.kind()) {
             case LOCAL -> "`" + u.name() + "`: " + (u.def().kind().equals("argument") ? "function argument" : u.def().kind().equals("rec") ? "attribute of a recursive set" : "let binding")
                     + ", line " + (doc.lines.line(u.def().pos()) + 1);
-            case GLOBAL -> "`" + u.name() + "`: built in" + (builtinNames.contains(u.name()) ? " (`builtins." + u.name() + "`)" : "");
+            case GLOBAL -> BuiltinDocs.doc(u.name()) != null
+                    ? "`" + BuiltinDocs.signature(u.name()) + "`: built in\n\n" + BuiltinDocs.doc(u.name())
+                    : "`" + u.name() + "`: built in" + (builtinNames.contains(u.name()) ? " (`builtins." + u.name() + "`)" : "");
             case WITH -> "`" + u.name() + "`: from `with`";
             case UNDEFINED -> "`" + u.name() + "`: undefined";
         };
@@ -780,6 +782,10 @@ public final class LspServer {
         if (start == end || start == 0 || text.charAt(start - 1) != '.') return null;
         String parent = pathBefore(text, start - 1);
         if (parent.isEmpty()) return null;
+        String attr = text.substring(start, end);
+        if (parent.equals("builtins") && BuiltinDocs.doc(attr) != null) {
+            return obj("contents", obj("kind", "markdown", "value", Bytes.fromJava("`builtins." + BuiltinDocs.signature(attr) + "`\n\n" + BuiltinDocs.doc(attr))), "range", range(doc, start, end));
+        }
         Value p = evaluate(doc, start, start, parent);
         if (p == null) return null;
         String name = text.substring(start, end);
@@ -852,7 +858,7 @@ public final class LspServer {
             }
         }
         for (String g : globals) {
-            if (g.startsWith(prefix) && (!g.startsWith("__") || prefix.startsWith("_")) && seen.add(g)) items.add(item(g, g.equals("builtins") ? 9 : 3, "built in"));
+            if (g.startsWith(prefix) && (!g.startsWith("__") || prefix.startsWith("_")) && seen.add(g)) items.add(builtinItem(g, g.equals("builtins") ? 9 : 3));
         }
         for (String k : KEYWORDS) if (k.startsWith(prefix)) items.add(item(k, 14, "keyword"));
         // From the `with`s around (after what's in scope, which wins over them): `with pkgs; [ hel`.
@@ -1544,6 +1550,12 @@ public final class LspServer {
         }
         if (parent == null) return item;
         Map<String, Object> out = new LinkedHashMap<>(item);
+        String itemName = Bytes.toJava(Json.str(data.get("name")));
+        if ("builtins".equals(data.get("expression") instanceof String e ? Bytes.toJava(e) : null) && BuiltinDocs.doc(itemName) != null) {
+            out.put("detail", Bytes.fromJava(BuiltinDocs.signature(itemName)));
+            out.put("documentation", obj("kind", "markdown", "value", Bytes.fromJava(BuiltinDocs.doc(itemName))));
+            return out;
+        }
         try {
             Value d = describe().execute(parent, Bytes.toJava(Json.str(data.get("name"))));
             out.put("detail", Bytes.fromJava(d.getMember("detail").isNull() ? "" : d.getMember("detail").asString()));
@@ -1574,6 +1586,14 @@ public final class LspServer {
 
     private void log(String message) {
         notify("window/logMessage", obj("type", 4L, "message", Bytes.fromJava(message)));
+    }
+
+    /** A builtin's completion item, with its signature and documentation. */
+    private static Map<String, Object> builtinItem(String name, long kind) {
+        String signature = BuiltinDocs.signature(name);
+        Map<String, Object> it = item(name, kind, signature != null ? signature : "built in");
+        if (BuiltinDocs.doc(name) != null) it.put("documentation", obj("kind", "markdown", "value", Bytes.fromJava(BuiltinDocs.doc(name))));
+        return it;
     }
 
     private static Map<String, Object> item(String label, long kind, String detail) {

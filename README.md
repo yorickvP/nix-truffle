@@ -412,7 +412,9 @@ LSP client: run `nix-truffle lsp` for files of type `nix`. It knows Nix the way 
   path literals (`./dir` is its `default.nix`), highlight, an outline (document symbols), rename
   (of `let` bindings and `x:` arguments: not of what other code names, like a function's
   attribute arguments, a set's attributes or inherited names), hover, and completion of the names
-  in scope and keywords. A text that doesn't parse (being typed) is repaired where the parser
+  in scope and keywords; builtins with their signature and documentation (CppNix's, from its
+  `nix __dump-language`, LGPL-2.1-or-later: `bin/builtin-docs` makes
+  `src/main/resources/nixtruffle/lsp/builtins.json`). A text that doesn't parse (being typed) is repaired where the parser
   stops (`;`, `null;`, a closing bracket, ...) so that all of this goes on for the rest of it, and
   each syntax error on the way is reported.
 - **Evaluating**, for what's after a `.`, names from `with`, and attribute names in modules: the
