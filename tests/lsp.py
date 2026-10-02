@@ -443,7 +443,7 @@ let cfg = config.services.nginx; in {
   inputs.nixpkgs.url = "path:%s";
   outputs = { self, nixpkgs }: let
     system = "x86_64-linux";
-    base = { boot.loader.grub.enable = false; fileSystems."/".device = "x"; system.stateVersion = "25.11"; };
+    base = { boot.loader.grub.enable = false; fileSystems."/" = { device = "x"; fsType = "ext4"; }; system.stateVersion = "25.11"; networking.hostName = "base"; };
   in {
     overlays.default = final: prev: { myHello = prev.hello; };
     legacyPackages.${system} = import nixpkgs { inherit system; overlays = [ self.overlays.default ]; };
@@ -520,6 +520,24 @@ let cfg = config.services.nginx; in {
         time.sleep(0.2)
     check("diagnosed when saved", [d["message"] for d in c.diagnostics.get(thing.as_uri(), []) if d["severity"] == 1], ["no option `beta.onyl`; did you mean `only`?"])
     thing.write_text(good)
+    c.open(thing.as_uri(), good)
+    # One that conflicts with another file's definition (as the configuration had it).
+    conflict = good.replace("beta.only = true;", 'beta.only = true;\n  networking.hostName = "thing";')
+    c.open(thing.as_uri(), conflict)
+    deadline = time.time() + 60
+    while time.time() < deadline and not any("conflicting" in d["message"] for d in c.diagnostics.get(thing.as_uri(), [])):
+        c.request("textDocument/hover", {"textDocument": {"uri": thing.as_uri()}, "position": {"line": 0, "character": 0}})
+        time.sleep(0.2)
+    check("a definition in conflict with another file's", [(d["range"]["start"]["line"], d["message"].split("\n")[0]) for d in c.diagnostics.get(thing.as_uri(), []) if d["severity"] == 1],
+          [(2, "The option `networking.hostName' has conflicting definition values:")])
+    conflict = good.replace("beta.only = true;", 'beta.only = true;\n  users.users.root.home = "/x";')
+    c.open(thing.as_uri(), conflict)
+    deadline = time.time() + 60
+    while time.time() < deadline and not any("conflicting" in d["message"] for d in c.diagnostics.get(thing.as_uri(), [])):
+        c.request("textDocument/hover", {"textDocument": {"uri": thing.as_uri()}, "position": {"line": 0, "character": 0}})
+        time.sleep(0.2)
+    check("one in a submodule", [(d["message"].split("\n")[0], "- In `shared/thing.nix': \"/x\"" in d["message"]) for d in c.diagnostics.get(thing.as_uri(), []) if d["severity"] == 1],
+          [("The option `users.users.root.home' has conflicting definition values:", True)])
     c.open(thing.as_uri(), good)
     plain = fl / "plain.nix"
     ptext = plain.read_text().replace("alpha.only", "alpha.onyl")

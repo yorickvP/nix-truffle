@@ -1462,27 +1462,106 @@ public final class LspServer {
         return String.join(".", path.stream().map(n -> n.matches("[A-Za-z_][A-Za-z0-9_'-]*") ? n : "\"" + n + "\"").toList());
     }
 
-    /** Why a definition's value doesn't do for its option, or null. */
+    /**
+     * Why a definition's value doesn't do for its option, or null: on its own, then with the
+     * configuration's other definitions of the option (those of the other files, as they were
+     * when it was evaluated), whose merge may find them in conflict.
+     */
     private String check(Doc doc, Value module, ModuleDefinitions.Definition d) {
+        Value option, lib, ours;
+        String loc;
         try {
             List<String> parent = d.path().subList(0, d.path().size() - 1);
             Value opts = optionsAt(doc, parent);
             if (opts == null || !opts.hasMember(d.path().getLast())) return null;
-            String pathJSON = Bytes.toJava(Json.write(d.path().stream().map(x -> (Object) Bytes.fromJava(x)).toList()));
-            Value at = definitionIn().execute(module, pathJSON);
+            loc = Bytes.toJava(Json.write(d.path().stream().map(x -> (Object) Bytes.fromJava(x)).toList()));
+            Value at = definitionIn().execute(module, loc);
             if (!at.getMember("found").asBoolean()) return null;
-            Value value = at.getMember("value");
-            Value lib = resolver(doc).execute(context.eval("nix", "{ arg = \"lib\"; }"));
-            checker().execute(lib, opts.getMember(d.path().getLast()), Bytes.toJava(Json.write(d.path().stream().map(x -> (Object) Bytes.fromJava(x)).toList())),
-                    Path.of(URI.create(doc.uri)).toString(), value);
+            option = opts.getMember(d.path().getLast());
+            lib = resolver(doc).execute(context.eval("nix", "{ arg = \"lib\"; }"));
+            ours = checker().getMember("definition").execute(Path.of(URI.create(doc.uri)).toString(), at.getMember("value"));
+        } catch (org.graalvm.polyglot.PolyglotException e) {
+            if (e.isInterrupted() || e.isCancelled()) throw e;
+            return null;
+        }
+        String alone = merged(lib, option, loc, "[]", ours);
+        if (alone != null) return alone.contains("is not of type") ? shortened(alone) : null;
+        // the option in the configuration: this one, or the one of the submodule it's in
+        // (users.users for users.users.x.uid), and the path from it
+        Value others = othersOf(doc, loc);
+        if (others == null || others.getMember("defs").getArraySize() == 0) return null;
+        Value top = others.getMember("option");
+        String topLoc = others.getMember("loc").asString(), rest = others.getMember("rest").asString();
+        if (!rest.equals("[]")) {
+            try {
+                Value at = definitionIn().execute(module, topLoc);
+                if (!at.getMember("found").asBoolean()) return null;
+                ours = checker().getMember("definition").execute(Path.of(URI.create(doc.uri)).toString(), at.getMember("value"));
+            } catch (org.graalvm.polyglot.PolyglotException e) {
+                if (e.isInterrupted() || e.isCancelled()) throw e;
+                return null;
+            }
+        }
+        Value theirs = others.getMember("defs");
+        String together = merged(lib, top, topLoc, rest, checker().getMember("concat").execute(ours, theirs));
+        // (not of a conflict the other definitions have among themselves)
+        if (together == null || !(together.contains("conflicting definition values") || together.contains("is defined multiple times")
+                || together.contains("is not of type")) || merged(lib, top, topLoc, rest, theirs) != null) return null;
+        return shortened(together);
+    }
+
+    /** A message with the workspace's files (and the flake's copies of them) relative to it. */
+    private String shortened(String message) {
+        String flake = flakePath();
+        if (flake != null) message = message.replace(flake + "/", "");
+        return rootPath == null ? message : message.replace(rootPath + "/", "");
+    }
+
+    /** What merging these definitions says (null: nothing). */
+    private String merged(Value lib, Value option, String loc, String rest, Value defs) {
+        try {
+            checker().getMember("check").execute(lib, option, loc, rest, defs);
             return null;
         } catch (org.graalvm.polyglot.PolyglotException e) {
             if (e.isInterrupted() || e.isCancelled()) throw e;
-            // Only what the module system says of the definition: other errors are of what the
+            // Only what the module system says of the definitions: other errors are of what a
             // value reads, in a configuration that may not be the one it's meant for (a mkIf
             // that's false there, another machine's settings).
-            String message = evaluationMessage(e.getMessage());
-            return message.contains("is not of type") ? message : null;
+            return evaluationMessage(e.getMessage());
+        }
+    }
+
+    private String flakePath() {
+        Value p = session().getMember("flakePath");
+        return p.isNull() ? null : p.asString();
+    }
+
+    /**
+     * {@code { option; loc; rest; defs; }}: the option in the document's configuration that
+     * {@code loc} is (or is in a submodule of: rest is the path after it), and its definitions
+     * but for the document's, at the priority they won by; or null.
+     */
+    private Value othersOf(Doc doc, String loc) {
+        try {
+            String rel = relative(doc), flake = flakePath();
+            List<String> names = new ArrayList<>();
+            names.add(Path.of(URI.create(doc.uri)).toString());
+            if (rel != null && flake != null) names.add(flake + "/" + rel);
+            List<Object> files = new ArrayList<>();
+            for (String n : names) {
+                files.add(Bytes.fromJava(n));
+                // (imported as its directory: `../roles`)
+                if (n.endsWith("/default.nix")) files.add(Bytes.fromJava(n.substring(0, n.length() - "/default.nix".length())));
+            }
+            Value others = checker().getMember("others").execute(resolver(doc).execute(context.eval("nix", "{ arg = \"options\"; }")), loc,
+                    Bytes.toJava(Json.write(files)));
+            if (others.isNull()) return null;
+            others.getMember("defs").getArraySize();
+            return others;
+        } catch (org.graalvm.polyglot.PolyglotException e) {
+            if (e.isInterrupted() || e.isCancelled()) throw e;
+            log("other definitions of " + loc + ": " + evaluationMessage(e.getMessage()));
+            return null;
         }
     }
 
@@ -1602,16 +1681,44 @@ public final class LspServer {
     private Value checker() {
         if (checker == null) {
             checker = context.eval("nix", """
-                    lib: option: locJSON: file: value:
-                    let
-                      m = lib.modules.mergeDefinitions (builtins.fromJSON locJSON) option.type [ { inherit file value; } ];
-                      v = m.mergedValue;
-                    in
-                    # a list's elements and a set's names are where the merge checks the elements' types
-                    if !m.isDefined then true
-                    else if builtins.isList v then builtins.foldl' (a: x: builtins.seq x a) true v
-                    else if builtins.isAttrs v && (v.type or null) != "derivation" then builtins.seq (builtins.attrNames v) true
-                    else builtins.seq v true
+                    {
+                      definition = file: value: [ { inherit file value; } ];
+                      concat = a: b: a ++ b;
+                      # (the value at rest in the merged value)
+                      check = lib: option: locJSON: restJSON: defs:
+                        let
+                          m = lib.modules.mergeDefinitions (builtins.fromJSON locJSON) option.type defs;
+                          v = builtins.foldl' (v: n: v.${n}) m.mergedValue (builtins.fromJSON restJSON);
+                        in
+                        # a list's elements and a set's names are where the merge checks the elements' types
+                        if !m.isDefined then true
+                        else if builtins.isList v then builtins.foldl' (a: x: builtins.seq x a) true v
+                        else if builtins.isAttrs v && (v.type or null) != "derivation" then builtins.seq (builtins.attrNames v) true
+                        else builtins.seq v true;
+                      # an option's definitions but for those of these files (a submodule's say
+                      # "<file>, via option ..."), as overrides of the priority they won by
+                      others = options: locJSON: filesJSON:
+                        let
+                          files = builtins.fromJSON filesJSON;
+                          isOption = o: builtins.isAttrs o && (o._type or null) == "option";
+                          loc = builtins.fromJSON locJSON;
+                          walk = o: p: n:
+                            if isOption o then { option = o; inherit n; }
+                            else if p == [ ] || !builtins.isAttrs o then null
+                            else walk (o.${builtins.head p} or null) (builtins.tail p) (n + 1);
+                          found = walk options loc 0;
+                          o = found.option;
+                          ours = d: builtins.any (f: d.file == f || builtins.substring 0 (builtins.stringLength f + 6) d.file == f + ", via") files;
+                        in
+                        if found == null || !(o ? definitionsWithLocations) then null
+                        else {
+                          option = o;
+                          loc = builtins.toJSON (builtins.genList (builtins.elemAt loc) found.n);
+                          rest = builtins.toJSON (builtins.genList (i: builtins.elemAt loc (found.n + i)) (builtins.length loc - found.n));
+                          defs = map (d: { inherit (d) file; value = { _type = "override"; priority = o.highestPrio or 100; content = d.value; }; })
+                            (builtins.filter (d: !ours d) o.definitionsWithLocations);
+                        };
+                    }
                     """);
         }
         return checker;

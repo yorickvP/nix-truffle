@@ -456,7 +456,10 @@ LSP client: run `nix-truffle lsp` for files of type `nix`. It knows Nix the way 
   - diagnostics of a module's definitions (when it is opened and saved): options that don't
     exist (`no option services.openssh.enabel; did you mean enable?`), and values that the
     module system's merge rejects for their option's type, each definition's value evaluated in
-    its scope;
+    its scope; and merged with the configuration's other definitions of the option (those of
+    the other files, as last evaluated, at the priority they won by; at the submodule's option
+    for one in a submodule, `users.users` for `users.users.x.uid`), the conflicts that merge
+    finds (`The option networking.hostName has conflicting definition values`);
   - inlay hints: the version of the packages a file names (`pkgs.hello` 2.12.3, `with pkgs;
     [ htop ]` 3.5.3), and in a module the default of the options it defines, where that's
     short, not empty (null, false, `[ ]`, ...) and not what's written (`peer-port = 54735;
