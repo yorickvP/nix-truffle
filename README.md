@@ -458,7 +458,9 @@ LSP client: run `nix-truffle lsp` for files of type `nix`. It knows Nix the way 
     module system's merge rejects for their option's type, each definition's value evaluated in
     its scope;
   - inlay hints: the version of the packages a file names (`pkgs.hello` 2.12.3, `with pkgs;
-    [ htop ]` 3.5.3);
+    [ htop ]` 3.5.3), and in a module the default of the options it defines, where that's
+    short, not empty (null, false, `[ ]`, ...) and not what's written (`peer-port = 54735;
+    default: 51413`);
   - quick fixes (code actions): the name a "did you mean" meant, the `;` (or bracket, quote) a
     syntax error misses;
   - go to definition of attributes: a package's `meta.position`, an option's declarations, a

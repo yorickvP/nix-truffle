@@ -1238,7 +1238,86 @@ public final class LspServer {
                 if (!version.isEmpty()) hints.add(hint(doc, u.pos() + u.name().length(), version));
             }
         }
+        if (moduleLike(doc) || doc.root instanceof Expr.Attrs && isModule(doc)) defaultHints(doc, from, to, hints);
         return hints;
+    }
+
+    /** Option defaults shown (by document and option path), until a reload. */
+    private final Map<String, String> defaults = new HashMap<>();
+    private Value defaultOf;
+
+    /**
+     * A module's definitions' options' defaults, short ones that aren't empty (null, false, [ ],
+     * ...): after the definition when it's on one line ({@code port = 8080;  default: 80}), else
+     * after its name. Not where the value written is the default.
+     */
+    private void defaultHints(Doc doc, int from, int to, List<Object> hints) {
+        Map<List<String>, Value> parents = new HashMap<>();
+        for (ModuleDefinitions.Definition d : ModuleDefinitions.of(doc.text, doc.root)) {
+            if (hints.size() >= 200) break;
+            if (d.keyStart() < from || d.keyStart() > to) continue;
+            List<String> parent = d.path().subList(0, d.path().size() - 1);
+            String label = defaults.computeIfAbsent(doc.uri + "\0" + String.join("\0", d.path()), k -> {
+                Value opts = parents.computeIfAbsent(parent, x -> optionsAt(doc, x));
+                return opts == null ? "" : defaultOf(opts, d.path().getLast());
+            });
+            if (label.isEmpty()) continue;
+            // (a value's position may be within it: a selection's is its `.`)
+            int eq = skipBlank(doc.text, d.keyEnd());
+            int value = eq < doc.text.length() && doc.text.charAt(eq) == '=' ? skipBlank(doc.text, eq + 1) : d.valuePos();
+            if (doc.text.startsWith(label, value) && doc.text.startsWith(";", skipBlank(doc.text, value + label.length()))) continue;
+            hints.add(obj("position", doc.lines.position(defaultHintAt(doc.text, d)), "label", Bytes.fromJava("default: " + label), "paddingLeft", true));
+        }
+    }
+
+    private static int skipBlank(String text, int i) {
+        while (i < text.length() && (text.charAt(i) == ' ' || text.charAt(i) == '\t')) i++;
+        return i;
+    }
+
+    /** The end of a definition's line, if it ends there (with its `;`), else the end of its names. */
+    private static int defaultHintAt(String text, ModuleDefinitions.Definition d) {
+        int lineEnd = text.indexOf('\n', d.keyStart());
+        if (lineEnd < 0) lineEnd = text.length();
+        if (d.valuePos() > lineEnd) return d.keyEnd();
+        int comment = text.indexOf('#', d.valuePos());
+        int end = comment >= 0 && comment < lineEnd ? comment : lineEnd;
+        while (end > d.valuePos() && Character.isWhitespace(text.charAt(end - 1))) end--;
+        return end > 0 && text.charAt(end - 1) == ';' ? end : d.keyEnd();
+    }
+
+    /** An option's default, if it's short and on one line (else ""). */
+    private String defaultOf(Value opts, String name) {
+        try {
+            if (defaultOf == null) defaultOf = context.eval("nix", """
+                    opts: name:
+                    let
+                      safe = x: let r = builtins.tryEval x; in if r.success then r.value else null;
+                      o = opts.${name} or null;
+                      short = s: if builtins.isString s && builtins.stringLength s <= 40 && builtins.length (builtins.split "\n" s) == 1 then s else "";
+                      shown = v: let t = builtins.typeOf v; in
+                        if builtins.elem t [ "bool" "int" "float" "null" ] then builtins.toJSON v
+                        else if t == "string" then builtins.toJSON v
+                        else if t == "path" then toString v
+                        else if t == "list" && v == [ ] then "[ ]"
+                        else if t == "list" && builtins.length v <= 4 && builtins.all (x: builtins.elem (builtins.typeOf x) [ "bool" "int" "float" "null" "string" ]) v
+                        then "[ " + builtins.concatStringsSep " " (map builtins.toJSON v) + " ]"
+                        else if t == "set" && (v.type or null) == "derivation" then v.name or ""
+                        else if t == "set" && v == { } then "{ }"
+                        else "";
+                    in
+                    # (an option may have no default: not a throw that tryEval catches)
+                    if !(builtins.isAttrs o && (o._type or null) == "option" && (o ? defaultText || o ? default)) then ""
+                    else short (safe (if o ? defaultText then (if builtins.isString o.defaultText then o.defaultText else o.defaultText.text or "") else shown o.default))
+                    """);
+            Value v = defaultOf.execute(opts, name);
+            String d = v.isString() ? v.asString() : "";
+            // (an empty one says little: an option that's off, or not set)
+            return List.of("null", "false", "[ ]", "{ }", "\"\"", "[]", "{}").contains(d) ? "" : d;
+        } catch (org.graalvm.polyglot.PolyglotException e) {
+            if (e.isInterrupted() || e.isCancelled()) throw e;
+            return "";
+        }
     }
 
     /** A package's version (or "" for what isn't one). */
@@ -2180,6 +2259,8 @@ public final class LspServer {
         checker = null;
         versions.clear();
         versionOf = null;
+        defaultOf = null;
+        defaults.clear();
         definitionIn = null;
         Context old = context;
         context = contexts.get();
