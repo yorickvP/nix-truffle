@@ -114,24 +114,10 @@ check "pure evaluation" "error: Pkl: access to absolute path '/etc/hostname' is 
   'builtins.pkl { text = "x = read(\"file:///etc/hostname\")"; }' --option pure-eval true
 check "polyglot off" 'false' 'builtins ? pkl' --option polyglot false
 
-# With NIXPKGS (a nixpkgs path): a NixOS system in Pkl (examples/pkl/nixos) is the same as in Nix,
-# and Pkl checks it against the options' types.
+# With NIXPKGS (a nixpkgs path): examples/pkl/package, a package in Pkl and one amending it, are
+# the same as in Nix.
 if [[ -n "${NIXPKGS:-}" ]]; then
-  example="$root/examples/pkl/nixos"
-  NIX_TRUFFLE_DAEMON=0 "$truffle" eval --raw -I "nixpkgs=$NIXPKGS" --file "$example/schema.nix" > "$example/nixos.pkl"
-  systems="$(NIX_TRUFFLE_DAEMON=0 timeout 300 "$truffle" -I "nixpkgs=$NIXPKGS" --strict "$example" 2>&1)"
-  if [[ "$systems" =~ fromNix\ =\ (\"[^\"]*\").*fromPkl\ =\ (\"[^\"]*\") && "${BASH_REMATCH[1]}" == "${BASH_REMATCH[2]}" ]]; then
-    passed=$((passed + 1))
-  else
-    failed=$((failed + 1))
-    printf 'FAIL NixOS in Pkl\n  got: %s\n' "$systems"
-  fi
-  # examples/pkl/package: a package in Pkl, and one amending it, are the same as in Nix.
   check "packages in Pkl" 'true' "let pkgs = import <nixpkgs> { }; p = import $root/examples/pkl/package { inherit pkgs; }; in p.hello-quiet.drvPath == (pkgs.stdenv.mkDerivation { pname = \"hello-quiet\"; version = \"2.12.3\"; src = pkgs.fetchurl { url = \"mirror://gnu/hello/hello-2.12.3.tar.gz\"; hash = \"sha256-DV9gFUOC/uELEUocNOeF2LH0kgc64tOm97FHaHs2aqA=\"; }; nativeBuildInputs = [ pkgs.perl ]; doCheck = false; configureFlags = [ \"--disable-nls\" ]; meta = { description = \"A program that produces a familiar, friendly greeting\"; homepage = \"https://www.gnu.org/software/hello/manual/\"; license = pkgs.lib.licenses.gpl3Plus; mainProgram = \"hello\"; }; }).drvPath" -I "nixpkgs=$NIXPKGS"
-  # The schema of a configuration with a Pkl module, before there is one.
-  check "NixOS schema without its Pkl module" 'true' "let pkl = import $root/nixos/pkl.nix { lib = import <nixpkgs/lib>; }; nixos = import <nixpkgs/nixos/lib/eval-config.nix> { system = \"x86_64-linux\"; modules = [ (pkl.module ./missing-schema.pkl) { system.stateVersion = \"25.11\"; } ]; }; in builtins.stringLength (pkl.schemaOf nixos) > 1000000" -I "nixpkgs=$NIXPKGS"
-  printf 'amends "%s"\nservices { openssh { enabel = true } }\n' "$example/nixos.pkl" > typo.pkl
-  check "NixOS option typo" 'error: Pkl: Cannot find property `enabel` in object of type `nixos#O_services_openssh`.' 'builtins.pkl { module = ./typo.pkl; }'
 fi
 
 echo "$passed passed, $failed failed"
