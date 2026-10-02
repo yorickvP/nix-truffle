@@ -2180,6 +2180,12 @@ public final class LspServer {
                 home = if flake != null then flake.homeConfigurations or { } else { };
               };
               configurations = builtins.mapAttrs (_: builtins.mapAttrs (_: unchecked)) raw;
+              # home-manager as a NixOS module: its users' evaluations (a submodule's, which its
+              # option's valueMeta has)
+              hmUsersOf = c:
+                let o = c.options.home-manager.users or null; in
+                if builtins.isAttrs o && (o._type or null) == "option" && o ? valueMeta then builtins.attrNames (o.valueMeta.attrs or { }) else [ ];
+              hmOf = c: user: unchecked c.options.home-manager.users.valueMeta.attrs.${user}.configuration;
             in {
               inherit scope configurations unchecked;
               packagesName = packages.name;
@@ -2199,7 +2205,16 @@ public final class LspServer {
                 else base request;
               # The files a configuration imports: listing its options imports all of its modules,
               # in an evaluation of its own (one done before imported them already).
-              imports = kind: name: (__nixTruffle.importsDuring (_: builtins.attrNames (unchecked raw.${kind}.${name}).options)).files;
+              # (and a NixOS configuration's home-manager users': imported when they're evaluated)
+              imports = kind: name:
+                let c = unchecked raw.${kind}.${name}; in {
+                  files = (__nixTruffle.importsDuring (_: builtins.attrNames c.options)).files;
+                  # (evaluating which users there are imports what defines them: `users.x = import ./x.nix`)
+                  users = __nixTruffle.importsDuring (_: if kind == "nixos" then hmUsersOf c else [ ]);
+                  userFiles = user: (__nixTruffle.importsDuring (_: builtins.attrNames (hmOf c user).options)).files;
+                };
+              # a NixOS configuration's home-manager user (hm:host/user)
+              hm = host: user: hmOf configurations.nixos.${host} user;
               # A NixOS module gets its configuration's pkgs; anything else the package set.
               resolver = nixos: module:
                 let
@@ -2208,7 +2223,8 @@ public final class LspServer {
                   # NixOS's utils, home-manager's osConfig, ...), and a configuration made by hand
                   # can say more (args).
                   special = { inherit pkgs; lib = pkgs.lib; }
-                    // (if module && nixos != null then nixos._module.specialArgs or { } // nixos._module.args or { } else { })
+                    # (specialArgs first, as the module system has them: home-manager's _module.args.osConfig is null)
+                    // (if module && nixos != null then nixos._module.args or { } // nixos._module.specialArgs or { } else { })
                     // (if nixos != null then nixos.args or { } // { inherit (nixos) config options; } else { })
                     // (if flake != null then inputs // { self = flake; inherit inputs; } else { });
                   # an overlay's plain arguments (final: prev:, self: super:)
@@ -2361,22 +2377,35 @@ public final class LspServer {
             names.put("home", List.of());
         }
         int count = names.get("nixos").size() + names.get("home").size();
-        List<String> importing = count > 1 && rel != null ? importing(rel) : List.of();
+        // (with one NixOS configuration too: its home-manager users are found by the index)
+        List<String> importing = count > 0 && rel != null ? importing(rel) : List.of();
+        // home-manager as a NixOS module: host/user
+        names.put("hm", importsOf == null ? List.of() : importsOf.keySet().stream().filter(k -> k.startsWith("hm:")).map(k -> k.substring(3)).toList());
         if (!importing.isEmpty()) module = true;
+        boolean homeLike = rel != null && (rel.contains("home-manager") || rel.endsWith("home.nix"));
         String kind = !importing.isEmpty() ? importing.getFirst().substring(0, importing.getFirst().indexOf(':'))
-                : names.get("nixos").isEmpty() && !names.get("home").isEmpty() || rel != null && (rel.contains("home-manager") || rel.endsWith("home.nix")) && !names.get("home").isEmpty() ? "home"
+                : names.get("nixos").isEmpty() && !names.get("home").isEmpty() || homeLike && !names.get("home").isEmpty() ? "home"
+                : homeLike && !names.get("hm").isEmpty() ? "hm"
                 : "nixos";
-        String setting = setting(kind);
-        if (setting != null) return selection("expr:" + setting, unchecked(inScope(setting)), module, "the `" + kind + "` setting");
+        String setting = setting(kind.equals("hm") ? "home" : kind);
+        if (setting != null) return selection("expr:" + setting, unchecked(inScope(setting)), module, "the `" + (kind.equals("hm") ? "home" : kind) + "` setting");
         List<String> kindNames = names.get(kind);
         if (kindNames.isEmpty()) return selection("none", null, module, null);
-        List<String> named = new ArrayList<>();
-        for (Path p = Path.of(URI.create(doc.uri)).getParent(); p != null; p = p.getParent()) {
-            if (p.getFileName() != null && kindNames.contains(p.getFileName().toString())) named.add(p.getFileName().toString());
+        // (one of home-manager's users by its host's or its own name)
+        Set<String> dirs = new HashSet<>();
+        for (Path p = Path.of(URI.create(doc.uri)); p != null; p = p.getParent()) {
+            if (p.getFileName() != null) dirs.add(p.getFileName().toString().replaceFirst("\\.nix$", ""));
         }
+        List<String> named = kindNames.stream().filter(n -> dirs.contains(n) || n.contains("/")
+                && (dirs.contains(n.substring(0, n.indexOf('/'))) || dirs.contains(n.substring(n.indexOf('/') + 1)))).toList();
         List<String> imported = importing.stream().filter(k -> k.startsWith(kind + ":")).map(k -> k.substring(kind.length() + 1)).toList();
         String name = !imported.isEmpty() ? imported.stream().filter(named::contains).findFirst().orElse(imported.getFirst())
                 : !named.isEmpty() ? named.getFirst() : kindNames.getFirst();
+        if (kind.equals("hm")) {
+            String host = name.substring(0, name.indexOf('/')), user = name.substring(name.indexOf('/') + 1);
+            return selection("hm:" + name, session().getMember("hm").execute(host, user), module,
+                    "home-manager's `" + user + "` in `nixosConfigurations." + host + "`");
+        }
         Value configuration = session().getMember("configurations").getMember(kind).getMember(name);
         String label = "`" + (kind.equals("home") ? "homeConfigurations." : "nixosConfigurations.") + name + "`";
         return selection(kind + ":" + name, configuration, module, label);
@@ -2403,8 +2432,9 @@ public final class LspServer {
             long t = System.nanoTime();
             List<String> keys = configurationKeys();
             Map<String, Object> cached = readIndex();
-            if (cached != null && cached.get("imports") instanceof Map<?, ?> m && Json.obj(m).keySet().stream().map(Bytes::toJava).sorted().toList()
-                    .equals(keys.stream().sorted().toList())) {
+            // (the configurations of the flake: the home-manager users in them are found indexing them)
+            if (cached != null && cached.get("imports") instanceof Map<?, ?> m && Json.obj(m).keySet().stream().map(Bytes::toJava)
+                    .filter(k -> !k.startsWith("hm:")).sorted().toList().equals(keys.stream().sorted().toList())) {
                 importsOf = new LinkedHashMap<>();
                 Json.obj(m).forEach((k, v) -> {
                     Set<String> files = new HashSet<>();
@@ -2420,7 +2450,7 @@ public final class LspServer {
                 }
             } else {
                 Map<String, Set<String>> all = new LinkedHashMap<>();
-                for (String n : keys) all.put(n, indexOne(n, flake));
+                for (String n : keys) all.putAll(indexOne(n, flake));
                 importsOf = all;
                 importsFlake = flake;
                 log("what the configurations import: " + importsOf.size() + " in " + (System.nanoTime() - t) / 1_000_000 + " ms");
@@ -2444,18 +2474,52 @@ public final class LspServer {
         return keys;
     }
 
-    /** The flake's files a configuration imports (relative to it). */
-    private Set<String> indexOne(String key, String flake) {
-        Set<String> files = new HashSet<>();
+    /**
+     * The flake's files a configuration imports (relative to it): by its key, and by those of
+     * its home-manager users ({@code hm:host/user}), if it's NixOS's with home-manager.
+     */
+    private Map<String, Set<String>> indexOne(String key, String flake) {
+        Map<String, Set<String>> out = new LinkedHashMap<>();
+        String name = key.substring(key.indexOf(':') + 1);
+        Value imports;
         try {
-            Value fs = session().getMember("imports").execute(key.substring(0, key.indexOf(':')), key.substring(key.indexOf(':') + 1));
-            for (long j = 0; j < fs.getArraySize(); j++) {
-                String f = fs.getArrayElement(j).asString();
-                if (f.startsWith(flake + "/")) files.add(f.substring(flake.length() + 1));
-            }
+            imports = session().getMember("imports").execute(key.substring(0, key.indexOf(':')), name);
+            out.put(key, inFlake(imports.getMember("files"), flake));
         } catch (org.graalvm.polyglot.PolyglotException e) {
             if (e.isInterrupted() || e.isCancelled()) throw e;
             log("the imports of " + key + ": " + e.getMessage());
+            out.put(key, Set.of());
+            return out;
+        }
+        List<String> users = new ArrayList<>();
+        Set<String> defining = Set.of();
+        try {
+            Value us = imports.getMember("users").getMember("value");
+            for (long i = 0; i < us.getArraySize(); i++) users.add(us.getArrayElement(i).asString());
+            defining = inFlake(imports.getMember("users").getMember("files"), flake);
+        } catch (org.graalvm.polyglot.PolyglotException e) {
+            if (e.isInterrupted() || e.isCancelled()) throw e;
+            log("the home-manager users of " + key + ": " + e.getMessage());
+        }
+        for (String user : users) {
+            try {
+                Set<String> files = inFlake(imports.getMember("userFiles").execute(user), flake);
+                // (which user's a file that defines one is, isn't known: each one's)
+                files.addAll(defining);
+                out.put("hm:" + name + "/" + user, files);
+            } catch (org.graalvm.polyglot.PolyglotException e) {
+                if (e.isInterrupted() || e.isCancelled()) throw e;
+                log("the imports of home-manager's " + user + " in " + key + ": " + e.getMessage());
+            }
+        }
+        return out;
+    }
+
+    private static Set<String> inFlake(Value fs, String flake) {
+        Set<String> files = new HashSet<>();
+        for (long j = 0; j < fs.getArraySize(); j++) {
+            String f = fs.getArrayElement(j).asString();
+            if (f.startsWith(flake + "/")) files.add(f.substring(flake.length() + 1));
         }
         return files;
     }
@@ -2474,7 +2538,10 @@ public final class LspServer {
         String key = reindexing.removeFirst();
         String flake = flakePath();
         try {
-            importsOf.put(key, indexOne(key, flake));
+            Map<String, Set<String>> found = indexOne(key, flake);
+            // (its home-manager users as they are now)
+            if (key.startsWith("nixos:")) importsOf.keySet().removeIf(k -> k.startsWith("hm:" + key.substring("nixos:".length()) + "/"));
+            importsOf.putAll(found);
         } catch (org.graalvm.polyglot.PolyglotException e) {
             // (interrupted: its earlier index stays, till the next reload)
             importsFlake = null;

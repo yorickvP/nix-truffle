@@ -473,7 +473,7 @@ let cfg = config.services.nginx; in {
       scoped = scope.callPackage ./pkgs/scoped/package.nix { };
     })).scoped;
     nixosConfigurations.alpha = nixpkgs.lib.nixosSystem { inherit system; modules = [ base ./alpha.nix ./plain.nix ]; };
-    nixosConfigurations.beta = nixpkgs.lib.nixosSystem { inherit system; modules = [ base ./beta.nix ./shared/thing.nix ]; };
+    nixosConfigurations.beta = nixpkgs.lib.nixosSystem { inherit system; modules = [ base ./beta.nix ./shared/thing.nix ./hm.nix ]; };
     # home-manager's are modules too (as homeManagerConfiguration makes them)
     homeConfigurations.me = nixpkgs.lib.evalModules { modules = [ ./dots/main.nix ({ lib, ... }: {
       options.homeOnly = lib.mkOption { type = lib.types.bool; default = false; description = "Only home has this."; };
@@ -492,6 +492,22 @@ let cfg = config.services.nginx; in {
     (fl / "pkgs" / "scoped" / "package.nix").write_text("{ special, stdenv }:\nstdenv.mkDerivation { name = \"scoped\"; passthru.x = special.a; }\n")
     (fl / "overlay.nix").write_text("final: prev: {\n  x = prev.hello;\n}\n")
     (fl / "dots").mkdir()
+    # home-manager as a NixOS module, as it declares its users (a submodule each)
+    (fl / "hm.nix").write_text("""{ config, lib, pkgs, ... }: {
+  options.home-manager.users = lib.mkOption {
+    type = lib.types.attrsOf (lib.types.submoduleWith {
+      specialArgs = { osConfig = config; };
+      modules = [ ({ lib, ... }: {
+        options.homeOnly = lib.mkOption { type = lib.types.bool; default = false; description = "Only home has this."; };
+        config._module.args.pkgs = pkgs;
+      }) ];
+    });
+    default = { };
+  };
+  config.home-manager.users.me = { imports = [ ./dots/inner.nix ]; };
+}
+""")
+    (fl / "dots" / "inner.nix").write_text("{ config, osConfig, ... }: {\n  homeOnly = true;\n}\n")
     (fl / "dots" / "main.nix").write_text("{ config, pkgs, ... }: {\n  # a comment\n  homeOnly = true;\n}\n")
 
     def session(settings=None, capabilities=None):
@@ -527,6 +543,9 @@ let cfg = config.services.nginx; in {
     check("an overlay's prev", "hello" in complete_in(c, "overlay.nix", "prev.hello", "prev.hel", "hel;", 3), True)
     check("home-manager's options", complete_in(c, "dots/main.nix", "homeOnly = true;", "homeO", "O\n", 1), ["homeOnly"])
     check("said in hover", evaluated_with(c, "dots/main.nix", "homeOnly", 2), "`homeConfigurations.me` (its `pkgs`)")
+    check("home-manager as a NixOS module", complete_in(c, "dots/inner.nix", "homeOnly = true;", "homeO", "O\n", 1), ["homeOnly"])
+    check("said in hover", evaluated_with(c, "dots/inner.nix", "homeOnly", 2), "home-manager's `me` in `nixosConfigurations.beta` (its `pkgs`)")
+    check("its osConfig", complete_in(c, "dots/inner.nix", "homeOnly = true;", "x = osConfig.beta.onl;", "onl;", 3), ["only"])
     # A module saved with a misspelled option: diagnosed (with the evaluation there, which the
     # flake as saved, defining what isn't declared, mightn't give).
     thing = fl / "shared" / "thing.nix"

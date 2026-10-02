@@ -424,7 +424,9 @@ LSP client: run `nix-truffle lsp` for files of type `nix`. It knows Nix the way 
   about a second, later ones at once. What a file gets:
   - a module (a file a configuration imports, or a function of `config`, `options` or `pkgs`
     and `...`): a configuration's `config`, `options`, `pkgs` and `lib`, NixOS's
-    (`nixosConfigurations`) or home-manager's (`homeConfigurations`). Which one: one that
+    (`nixosConfigurations`) or home-manager's (`homeConfigurations`, or a user's of
+    home-manager as a NixOS module, `home-manager.users.alice = import ./alice.nix`: its
+    submodule's evaluation, with `osConfig`). Which one: one that
     imports the file (listing each configuration's options records the files it imports, in the
     background from the start, a few seconds for seven machines and a home, and kept in
     `~/.cache/nix-truffle/lsp`: one of an earlier source of the flake is used at once, and
@@ -510,8 +512,7 @@ expressions in a scope with the workspace's `flake`, its `inputs`, `system` and 
 = [ flake.overlays.default ]; }"`), `nixos` and `home` the configuration for every NixOS or
 home-manager module, `configurations` one for the files a glob matches. A configuration is
 anything with `options`, `config` and `pkgs` (and `args`, more arguments for its modules), so
-one can be made by hand, like home-manager's as a NixOS module (which the files it imports
-can't tell, as it imports them when the configuration's values are evaluated):
+one can be made by hand:
 
 ```json
 "home": "let os = flake.nixosConfigurations.frumar; in { options = os.options.home-manager.users.type.getSubOptions [ ]; config = os.config.home-manager.users.yorick; pkgs = os.pkgs; args.osConfig = os.config; }"
