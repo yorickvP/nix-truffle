@@ -15,10 +15,14 @@ root = Path(__file__).resolve().parent.parent
 truffle = os.environ.get("TRUFFLE", str(root / "bin" / "nix-truffle"))
 
 
+# (the server's cache, of what configurations import: not the user's)
+cache = Path(tempfile.mkdtemp())
+
+
 class Client:
     def __init__(self, init=None):
         self.init = init
-        env = dict(os.environ, NIX_TRUFFLE_DAEMON="0")
+        env = dict(os.environ, NIX_TRUFFLE_DAEMON="0", XDG_CACHE_HOME=str(cache))
         self.proc = subprocess.Popen([truffle, "lsp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
         self.next_id = 0
         self.diagnostics = {}
@@ -582,6 +586,26 @@ let cfg = config.services.nginx; in {
     check("a configuration made by hand", complete_in(c, "dots/main.nix", "homeOnly = true;", "homeO", "O\n", 1), ["homeOnly"])
     check("its arguments", complete_in(c, "dots/main.nix", "{ config, pkgs, ... }: {\n  # a comment\n  homeOnly = true;",
                                        "{ extra, ... }: {\n  x = extra.;", "extra.;", 6), ["a"])
+    c.request("shutdown", None)
+    c.notify("exit", None)
+
+    # What the configurations import, from the cache: of an earlier source of the flake, then
+    # evaluated again (after the requests that came meanwhile).
+    check("the import index is cached", len(list((cache / "nix-truffle" / "lsp").glob("*.json"))), 1)
+    (fl / "shared" / "new.nix").write_text("{ config, ... }: {\n  beta.only = true;\n}\n")
+    (fl / "flake.nix").write_text((fl / "flake.nix").read_text().replace("./beta.nix ./shared/thing.nix", "./beta.nix ./shared/thing.nix ./shared/new.nix"))
+    c = session()
+    new = fl / "shared" / "new.nix"
+    c.open(new.as_uri(), new.read_text())
+    # (alpha's, which hasn't beta.only, as the earlier index has no new.nix)
+    first = c.at("textDocument/hover", new.as_uri(), new.read_text(), "only", 1)
+    deadline = time.time() + 120
+    later = first
+    while time.time() < deadline and not (later and "nixosConfigurations.beta" in later["contents"]["value"]):
+        time.sleep(0.5)
+        later = c.at("textDocument/hover", new.as_uri(), new.read_text(), "only", 1)
+    check("an earlier index first, then evaluated again", (first, later and later["contents"]["value"].split("*evaluated with ")[-1].rstrip("*")),
+          (None, "`nixosConfigurations.beta` (its `pkgs`)"))
     c.request("shutdown", None)
     c.notify("exit", None)
 

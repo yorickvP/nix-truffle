@@ -426,8 +426,10 @@ LSP client: run `nix-truffle lsp` for files of type `nix`. It knows Nix the way 
     and `...`): a configuration's `config`, `options`, `pkgs` and `lib`, NixOS's
     (`nixosConfigurations`) or home-manager's (`homeConfigurations`). Which one: one that
     imports the file (listing each configuration's options records the files it imports, in the
-    background from the start, a few seconds for seven machines and a home; one named in the
-    file's path among them, `machines/frumar/...`), else one named in its path (home-manager's
+    background from the start, a few seconds for seven machines and a home, and kept in
+    `~/.cache/nix-truffle/lsp`: one of an earlier source of the flake is used at once, and
+    evaluated again a configuration at a time between requests; one named in the file's path
+    among them, `machines/frumar/...`), else one named in its path (home-manager's
     for a path with `home-manager` or `home.nix`), else the first. Configurations are evaluated
     without the check that what is defined is declared, which one being edited often fails;
   - a package of the flake (a file its `packages.${system}.<name>` or `legacyPackages`', named

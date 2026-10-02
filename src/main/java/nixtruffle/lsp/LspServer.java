@@ -238,7 +238,7 @@ public final class LspServer {
             return;
         }
         long setting = initOptions.get("evalTimeout") instanceof Number n ? n.longValue() : 10;
-        long seconds = task.method.equals("warmUp") || task.method.equals("diagnose") ? Math.max(setting, 120) : setting;
+        long seconds = task.method.equals("warmUp") || task.method.equals("diagnose") || task.method.equals("reindex") ? Math.max(setting, 120) : setting;
         running = task;
         java.util.concurrent.ScheduledFuture<?> timeout = timer.schedule(() -> interrupt(task, "timed out after " + seconds + " s"), seconds, java.util.concurrent.TimeUnit.SECONDS);
         try {
@@ -289,6 +289,10 @@ public final class LspServer {
             case "textDocument/inlayHint" -> inlayHints(task);
             case "diagnose" -> {
                 diagnose(task.doc);
+                yield null;
+            }
+            case "reindex" -> {
+                reindexStep();
                 yield null;
             }
             case "warmUp" -> {
@@ -2225,8 +2229,14 @@ public final class LspServer {
             """;
 
     private Value session;
-    /** Each NixOS configuration's imported files (in the flake's store copy), once needed. */
+    /** Each configuration's imported files in the flake (relative to it), once needed. */
     private Map<String, Set<String>> importsOf;
+    /** The flake source {@link #importsOf} is of (an earlier one's, from the cache, is refreshed). */
+    private String importsFlake;
+    /** The configurations whose imports are being evaluated again, one after another on the worker. */
+    private final List<String> reindexing = new ArrayList<>();
+    /** Which reindexing (the reload it's in) a queued step is of. */
+    private long indexGeneration;
     private final Map<String, Value> resolverFor = new HashMap<>();
     /** What a document's last evaluation was with, for hover. */
     private final Map<String, String> usedFor = new HashMap<>();
@@ -2378,41 +2388,151 @@ public final class LspServer {
         return new Selection(key + (module ? ":module" : ""), nixos, module, label);
     }
 
-    /** The configurations ({@code nixos:name}, {@code home:name}) that import the workspace file {@code rel}. */
+    /**
+     * The configurations ({@code nixos:name}, {@code home:name}) that import the workspace file
+     * {@code rel}. What they import is evaluated once (listing a configuration's options imports
+     * its modules), and kept in the user's cache (not the workspace): as the flake's source
+     * changes with any file, an index of another source is used, and evaluated again a
+     * configuration at a time after the requests that came meanwhile (they import the same files
+     * mostly).
+     */
     private List<String> importing(String rel) {
+        String flake = flakePath();
+        if (flake == null) return List.of();
         if (importsOf == null) {
             long t = System.nanoTime();
-            importsOf = new LinkedHashMap<>();
-            Value all = session().getMember("configurationNames");
-            List<String> keys = new ArrayList<>();
-            for (String kind : List.of("nixos", "home")) {
-                Value names = all.getMember(kind);
-                for (long i = 0; i < names.getArraySize(); i++) keys.add(kind + ":" + names.getArrayElement(i).asString());
-            }
-            for (String n : keys) {
-                Set<String> files = new HashSet<>();
-                try {
-                    Value fs = session().getMember("imports").execute(n.substring(0, n.indexOf(':')), n.substring(n.indexOf(':') + 1));
-                    for (long j = 0; j < fs.getArraySize(); j++) files.add(fs.getArrayElement(j).asString());
-                } catch (org.graalvm.polyglot.PolyglotException e) {
-                    if (e.isInterrupted() || e.isCancelled()) {
-                        importsOf = null;
-                        throw e;
-                    }
-                    log("the imports of " + n + ": " + e.getMessage());
+            List<String> keys = configurationKeys();
+            Map<String, Object> cached = readIndex();
+            if (cached != null && cached.get("imports") instanceof Map<?, ?> m && Json.obj(m).keySet().stream().map(Bytes::toJava).sorted().toList()
+                    .equals(keys.stream().sorted().toList())) {
+                importsOf = new LinkedHashMap<>();
+                Json.obj(m).forEach((k, v) -> {
+                    Set<String> files = new HashSet<>();
+                    for (Object x : (List<?>) v) files.add(Bytes.toJava((String) x));
+                    importsOf.put(Bytes.toJava(k), files);
+                });
+                importsFlake = Bytes.toJava(Json.str(cached.get("flake")));
+                log("what the configurations import: " + importsOf.size() + " from the cache" + (flake.equals(importsFlake) ? "" : ", of an earlier source"));
+                if (!flake.equals(importsFlake)) {
+                    reindexing.clear();
+                    reindexing.addAll(keys);
+                    reindexLater();
                 }
-                importsOf.put(n, files);
+            } else {
+                Map<String, Set<String>> all = new LinkedHashMap<>();
+                for (String n : keys) all.put(n, indexOne(n, flake));
+                importsOf = all;
+                importsFlake = flake;
+                log("what the configurations import: " + importsOf.size() + " in " + (System.nanoTime() - t) / 1_000_000 + " ms");
+                writeIndex();
             }
-            log("what the configurations import: " + importsOf.size() + " in " + (System.nanoTime() - t) / 1_000_000 + " ms");
         }
-        Value flakePath = session().getMember("flakePath");
-        if (flakePath.isNull()) return List.of();
-        String file = flakePath.asString() + "/" + rel;
         List<String> out = new ArrayList<>();
         importsOf.forEach((n, files) -> {
-            if (files.contains(file)) out.add(n);
+            if (files.contains(rel)) out.add(n);
         });
         return out;
+    }
+
+    private List<String> configurationKeys() {
+        Value all = session().getMember("configurationNames");
+        List<String> keys = new ArrayList<>();
+        for (String kind : List.of("nixos", "home")) {
+            Value names = all.getMember(kind);
+            for (long i = 0; i < names.getArraySize(); i++) keys.add(kind + ":" + names.getArrayElement(i).asString());
+        }
+        return keys;
+    }
+
+    /** The flake's files a configuration imports (relative to it). */
+    private Set<String> indexOne(String key, String flake) {
+        Set<String> files = new HashSet<>();
+        try {
+            Value fs = session().getMember("imports").execute(key.substring(0, key.indexOf(':')), key.substring(key.indexOf(':') + 1));
+            for (long j = 0; j < fs.getArraySize(); j++) {
+                String f = fs.getArrayElement(j).asString();
+                if (f.startsWith(flake + "/")) files.add(f.substring(flake.length() + 1));
+            }
+        } catch (org.graalvm.polyglot.PolyglotException e) {
+            if (e.isInterrupted() || e.isCancelled()) throw e;
+            log("the imports of " + key + ": " + e.getMessage());
+        }
+        return files;
+    }
+
+    /** Queues the next configuration's reindexing on the worker, after what's queued. */
+    private void reindexLater() {
+        long generation = indexGeneration;
+        Task task = new Task(null, "reindex", Map.of(), null);
+        worker.execute(() -> {
+            if (generation == indexGeneration) run(task);
+        });
+    }
+
+    private void reindexStep() {
+        if (importsOf == null || reindexing.isEmpty()) return;
+        String key = reindexing.removeFirst();
+        String flake = flakePath();
+        try {
+            importsOf.put(key, indexOne(key, flake));
+        } catch (org.graalvm.polyglot.PolyglotException e) {
+            // (interrupted: its earlier index stays, till the next reload)
+            importsFlake = null;
+            if (!reindexing.isEmpty()) reindexLater();
+            throw e;
+        }
+        if (!reindexing.isEmpty()) {
+            reindexLater();
+        } else if (importsFlake != null) {
+            importsFlake = flake;
+            log("what the configurations import: " + importsOf.size() + ", evaluated again");
+            writeIndex();
+        }
+    }
+
+    /** Where the index of the workspace is kept: in the user's cache directory. */
+    private Path indexFile() {
+        if (rootPath == null) return null;
+        String xdg = System.getenv("XDG_CACHE_HOME");
+        Path dir = xdg != null && !xdg.isEmpty() ? Path.of(xdg) : Path.of(System.getProperty("user.home"), ".cache");
+        try {
+            byte[] h = java.security.MessageDigest.getInstance("SHA-256").digest(rootPath.getBytes(StandardCharsets.UTF_8));
+            return dir.resolve("nix-truffle").resolve("lsp").resolve(java.util.HexFormat.of().formatHex(h, 0, 16) + ".json");
+        } catch (java.security.NoSuchAlgorithmException e) {
+            return null;
+        }
+    }
+
+    private Map<String, Object> readIndex() {
+        Path f = indexFile();
+        try {
+            if (f == null || !Files.exists(f)) return null;
+            Map<String, Object> m = Json.obj(Json.parse(Bytes.of(Files.readAllBytes(f))));
+            return m.get("version") instanceof Number v && v.longValue() == 1 && m.get("flake") instanceof String ? m : null;
+        } catch (IOException | RuntimeException e) {
+            log("reading the index " + f + ": " + e);
+            return null;
+        }
+    }
+
+    private void writeIndex() {
+        Path f = indexFile();
+        if (f == null || importsOf == null || importsFlake == null) return;
+        Map<String, Object> imports = new TreeMap<>();
+        importsOf.forEach((k, v) -> imports.put(Bytes.fromJava(k), v.stream().sorted().map(x -> (Object) Bytes.fromJava(x)).toList()));
+        Map<String, Object> m = new TreeMap<>();
+        m.put("version", 1L);
+        m.put("root", Bytes.fromJava(rootPath));
+        m.put("flake", Bytes.fromJava(importsFlake));
+        m.put("imports", imports);
+        try {
+            Files.createDirectories(f.getParent());
+            Path tmp = Files.createTempFile(f.getParent(), "index", ".tmp");
+            Files.write(tmp, Json.write(m).getBytes(StandardCharsets.ISO_8859_1));
+            Files.move(tmp, f, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+        } catch (IOException | RuntimeException e) {
+            log("writing the index " + f + ": " + e);
+        }
     }
 
     /** The document's path in the workspace, or null. */
@@ -2443,6 +2563,8 @@ public final class LspServer {
     private void reload() {
         session = null;
         importsOf = null;
+        reindexing.clear();
+        indexGeneration++;
         callsOf.clear();
         resolverFor.clear();
         usedFor.clear();
