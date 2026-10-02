@@ -25,11 +25,16 @@ import java.util.List;
 public final class Evaluate {
     private Evaluate() {}
 
-    /** {@code expression} (source text) in the scope at {@code offset} of {@code text} (byte strings). */
+    /**
+     * {@code expression} (source text) in the scope at {@code offset} of {@code text} (byte
+     * strings); or, with {@code expression} null, the file's own expression that starts at
+     * {@code offset} ({@code lib} in {@code inherit (lib) mkIf;}), in its scope.
+     */
     public static Object at(String path, String text, int offset, String expression, Object args) {
         Source source = Source.newBuilder("nix", text, path).build();
         Expr root = new Parser(source).parseFile();
-        Expr target = new Parser(Source.newBuilder("nix", expression, path).build()).parseFile();
+        Expr target = expression != null ? new Parser(Source.newBuilder("nix", expression, path).build()).parseFile() : startingAt(root, offset);
+        if (target == null) throw nixtruffle.runtime.NixException.error("no expression there", null);
         List<Expr> binders = new ArrayList<>();
         collect(root, offset, binders);
         return in(source, path, text, binders, target, args);
@@ -65,6 +70,16 @@ public final class Evaluate {
     }
 
     private static final String ARGS = "__lspArgs";
+
+    /** The outermost expression that starts at {@code offset}, or null. */
+    private static Expr startingAt(Expr e, int offset) {
+        if (e.pos() == offset) return e;
+        for (Expr c : Scopes.children(e)) {
+            Expr found = startingAt(c, offset);
+            if (found != null) return found;
+        }
+        return null;
+    }
 
     /**
      * {@code e} with its undefined variables (a file being edited has some) throwing when used,

@@ -160,6 +160,22 @@ check("hover on an attribute", c.at("textDocument/hover", luri, ltext, "a s.inc"
 check("hover on a function, with its doc comment", c.at("textDocument/hover", luri, ltext, "inc s.nested", 0)["contents"]["value"], "`s.inc`: function `function`\n\nAdds one.")
 check("hover on a nested attribute", c.at("textDocument/hover", luri, ltext, "b ]", 0)["contents"]["value"], '`s.nested.b`: string `"x"`')
 
+# inherit (s) ...: hover, definition and completion from what is inherited from.
+ifile = tmp / "inherit.nix"
+itext = """let
+  s = { alpha = 1; beta = 2; };
+  inherit (s) alpha;
+in alpha
+"""
+ifile.write_text(itext)
+iuri = ifile.as_uri()
+c.open(iuri, itext)
+check("hover on an inherited name", c.at("textDocument/hover", iuri, itext, "alpha\n", 0)["contents"]["value"], "`alpha` (inherited): int `1`")
+check("definition of an inherited name", [r["range"]["start"]["line"] for r in c.at("textDocument/definition", iuri, itext, "alpha\n", 0)], [1])
+partial = itext.replace("inherit (s) alpha;", "inherit (s) b")
+c.open(iuri, partial)
+check("completion of what to inherit", labels(c.at("textDocument/completion", iuri, partial, "b\n", 1)), ["beta"])
+
 # `with`: completion, hover, definition.
 wfile = tmp / "with.nix"
 wtext = """let
@@ -307,6 +323,14 @@ let cfg = config.services.nginx; in {
         return labels(r)
 
     check("options", complete("services.openssh.enable = true;", "services.ngi", "ngi\n", 3), ["nginx", "ngircd"])
+    lfile = (tmp / "inherits.nix").as_uri()
+    ltext = "{ lib, ... }:\nlet\n  inherit (lib) optional mkIf;\nin {\n  x = optional true 1;\n}\n"
+    c.open(lfile, ltext)
+    check("hover on a name inherited from lib", "Return a singleton list" in c.at("textDocument/hover", lfile, ltext, "optional true", 2)["contents"]["value"], True)
+    check("definition of a name inherited from lib", c.at("textDocument/definition", lfile, ltext, "optional true", 2)[0]["uri"].endswith("/lib/lists.nix"), True)
+    partial = ltext.replace("inherit (lib) optional mkIf;", "inherit (lib) optionalS")
+    c.open(lfile, partial)
+    check("completion of what to inherit from lib", labels(c.at("textDocument/completion", lfile, partial, "optionalS\n", 9)), ["optionalString"])
     check("options on an empty line of a set", {"allowedTCPPorts", "allowedUDPPorts"} <= set(complete("firewall.allowedTCPPorts = [ 22 ];", "firewall = { enable = true;\n    \n  };", "    \n  };", 4)), True)
     check("options at a module's top", "services" in complete("services.openssh.enable = true;", "servi", "ervi\n", 4), True)
     check("options in a set", complete("firewall.allowedTCPPorts = [ 22 ];", "firewall.allowedTC", "allowedTC", 9), ["allowedTCPPortRanges", "allowedTCPPorts"])

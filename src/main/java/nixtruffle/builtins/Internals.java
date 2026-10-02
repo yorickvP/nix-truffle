@@ -78,7 +78,7 @@ final class Internals {
                         ((Number) r.get("offset")).intValue(), a[1]);
             }
             return nixtruffle.lsp.Evaluate.at(nixtruffle.util.Json.str(r.get("file")), nixtruffle.util.Json.str(r.get("text")),
-                    ((Number) r.get("offset")).intValue(), nixtruffle.util.Json.str(r.get("expression")), a[1]);
+                    ((Number) r.get("offset")).intValue(), r.get("expression") instanceof String e ? e : null, a[1]);
         });
         put(m, "importsDuring", 1, a -> {
             // { value = f null; files = [ what evaluating it imported ]; }

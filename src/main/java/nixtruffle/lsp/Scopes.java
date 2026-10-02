@@ -26,7 +26,12 @@ public final class Scopes {
      * renaming it changes nothing else (not a set's attribute, nor a function's attribute
      * argument, nor an inherited name).
      */
-    public record Def(String name, int pos, String kind, boolean renamable) {}
+    public record Def(String name, int pos, String kind, boolean renamable, int fromPos) {
+        /** {@code fromPos}: where the set it is inherited from starts ({@code inherit (lib) mkIf;}), or -1. */
+        public boolean inheritedFrom() {
+            return fromPos >= 0;
+        }
+    }
 
     public enum Kind { LOCAL, GLOBAL, WITH, UNDEFINED }
 
@@ -191,7 +196,8 @@ public final class Scopes {
                     if (name != null) names.putIfAbsent(name, def(name, a.pos(), kind, kind.equals("let")));
                 }
                 case Inherit in -> {
-                    for (int i = 0; i < in.names().size(); i++) names.putIfAbsent(in.names().get(i), def(in.names().get(i), in.namePos().get(i), kind, false));
+                    int from = in.from() != null ? in.from().pos() : -1;
+                    for (int i = 0; i < in.names().size(); i++) names.putIfAbsent(in.names().get(i), def(in.names().get(i), in.namePos().get(i), kind, false, from));
                 }
             }
         }
@@ -212,7 +218,11 @@ public final class Scopes {
     }
 
     private Def def(String name, int pos, String kind, boolean renamable) {
-        Def d = new Def(name, pos, kind, renamable);
+        return def(name, pos, kind, renamable, -1);
+    }
+
+    private Def def(String name, int pos, String kind, boolean renamable, int fromPos) {
+        Def d = new Def(name, pos, kind, renamable, fromPos);
         defs.add(d);
         return d;
     }
@@ -226,7 +236,7 @@ public final class Scopes {
         Map<Def, Def> defsMap = new java.util.HashMap<>();
         for (Def d : defs) {
             if (drop.test(d.pos())) continue;
-            Def m = new Def(d.name(), f.applyAsInt(d.pos()), d.kind(), d.renamable());
+            Def m = new Def(d.name(), f.applyAsInt(d.pos()), d.kind(), d.renamable(), d.fromPos() < 0 ? -1 : f.applyAsInt(d.fromPos()));
             defsMap.put(d, m);
             out.defs.add(m);
         }

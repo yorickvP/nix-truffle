@@ -513,6 +513,14 @@ public final class LspServer {
 
     private Object definition(Doc doc, int offset) {
         Scopes.Use u = useAt(doc, offset);
+        // An inherited name (`inherit (lib) mkIf;`): its definition in what it's inherited from.
+        Scopes.Def inherited = u != null ? u.def() : defAt(doc, offset);
+        if (inherited != null && inherited.inheritedFrom()) {
+            int at = u != null ? u.pos() : inherited.pos();
+            Value from = evaluateFrom(doc, at, at, inherited.fromPos());
+            Object found = from == null ? null : locations(from, inherited.name());
+            if (found != null) return found;
+        }
         // A function's attribute argument (`{ fetchFromGitHub, ... }:`): where its value comes
         // from (the package set's fetchFromGitHub), else the argument.
         Scopes.Def formal = u != null ? u.def() : defAt(doc, offset);
@@ -738,6 +746,13 @@ public final class LspServer {
         Object attr = hoverAttribute(doc, offset);
         if (attr != null) return attr;
         Scopes.Use u = useAt(doc, offset);
+        Scopes.Def inherited = u != null && u.def() != null ? u.def() : u == null ? defAt(doc, offset) : null;
+        if (inherited != null && inherited.inheritedFrom()) {
+            int at = u != null ? u.pos() : inherited.pos();
+            Value from = evaluateFrom(doc, at, at, inherited.fromPos());
+            String md = from == null ? null : describeMarkdown(from, inherited.name(), "`" + inherited.name() + "` (inherited)");
+            if (md != null) return obj("contents", obj("kind", "markdown", "value", Bytes.fromJava(md + footer(doc))), "range", range(doc, at, at + inherited.name().length()));
+        }
         if (u == null) return null;
         if (u.kind() == Scopes.Kind.WITH) {
             Value env = withDefining(doc, u.pos(), u.name());
@@ -796,6 +811,18 @@ public final class LspServer {
         while (start > 0 && isNameChar(text.charAt(start - 1))) start--;
         String prefix = text.substring(start, offset);
         List<Object> items = new ArrayList<>();
+        int fromPos = inheritFromAt(text, start);
+        if (fromPos >= 0) {
+            Value from = evaluateFrom(doc, start, offset, fromPos);
+            if (from == null || !from.hasMembers()) return items;
+            for (String n : from.getMemberKeys()) {
+                if (!n.startsWith(prefix)) continue;
+                if (items.size() >= 500) return obj("isIncomplete", true, "items", items);
+                items.add(obj("label", Bytes.fromJava(n), "kind", 5L,
+                        "data", obj("uri", Bytes.fromJava(doc.uri), "offset", (long) start, "fromPos", (long) fromPos, "name", Bytes.fromJava(n))));
+            }
+            return items;
+        }
         List<String> optionPath = optionPath(doc, start, offset);
         if (optionPath != null) return optionItems(doc, optionPath, prefix);
         if (start > 0 && text.charAt(start - 1) == '.') {
@@ -1130,6 +1157,48 @@ public final class LspServer {
 
     private Value noArguments;
 
+    /**
+     * The file's own expression at {@code fromPos} ({@code lib} in {@code inherit (lib) mkIf;}), in
+     * its scope; the cursor's word is where the text may be completed to parse.
+     */
+    private Value evaluateFrom(Doc doc, int wordStart, int offset, int fromPos) {
+        Parseable p = parseable(doc, wordStart, offset);
+        if (p == null || fromPos > p.text.length()) return null;
+        try {
+            if (lspEval == null) lspEval = context.eval("nix", "__nixTruffle.lspEval");
+            Map<String, Object> request = obj("file", Bytes.fromJava(Path.of(URI.create(doc.uri)).toString()), "text", Bytes.fromJava(p.text),
+                    "offset", (long) p.text.substring(0, fromPos).getBytes(StandardCharsets.UTF_8).length);
+            return lspEval.execute(Json.write(request).getBytes(StandardCharsets.ISO_8859_1), resolver(doc));
+        } catch (org.graalvm.polyglot.PolyglotException | IllegalArgumentException e) {
+            if (e instanceof org.graalvm.polyglot.PolyglotException pe && (pe.isInterrupted() || pe.isCancelled())) throw pe;
+            log("evaluating what is inherited from: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /** At a name in {@code inherit (e) a b c}: where {@code e} starts, else -1. */
+    private static int inheritFromAt(String text, int wordStart) {
+        int kw = text.lastIndexOf("inherit", wordStart);
+        if (kw < 0 || text.substring(kw, wordStart).indexOf(';') >= 0) return -1;
+        if (kw > 0 && (Character.isLetterOrDigit(text.charAt(kw - 1)) || text.charAt(kw - 1) == '_')) return -1;
+        int i = kw + "inherit".length();
+        while (i < wordStart && Character.isWhitespace(text.charAt(i))) i++;
+        if (i >= wordStart || text.charAt(i) != '(') return -1;
+        int depth = 0, close = -1;
+        for (int j = i; j < wordStart; j++) {
+            char c = text.charAt(j);
+            if (c == '(') depth++;
+            else if (c == ')' && --depth == 0) {
+                close = j;
+                break;
+            }
+        }
+        if (close < 0) return -1;
+        int from = i + 1;
+        while (from < close && Character.isWhitespace(text.charAt(from))) from++;
+        return from;
+    }
+
     // ------------------------------------------------------------ what a file is evaluated with
 
     /**
@@ -1460,7 +1529,10 @@ public final class LspServer {
         Doc doc = docs.get(Bytes.toJava(Json.str(data.get("uri"))));
         if (doc == null) return item;
         Value parent;
-        if (data.get("with") instanceof Number w) {
+        if (data.get("fromPos") instanceof Number from) {
+            int offset = (int) Math.min(((Number) data.get("offset")).longValue(), doc.text.length());
+            parent = evaluateFrom(doc, offset, offset, from.intValue());
+        } else if (data.get("with") instanceof Number w) {
             int offset = (int) Math.min(((Number) data.get("offset")).longValue(), doc.text.length());
             Value envs = withEnvs(doc, offset, offset);
             parent = envs == null || w.longValue() >= envs.getArraySize() ? null : envs.getArrayElement(w.longValue());
