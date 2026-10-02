@@ -11,8 +11,9 @@
 # like `module.mkForce(false)` (Nix's lib.mkForce). Packages are values of `import "nix:pkgs"`
 # (`pkgs.htop`), calls of Nix functions (`pkgs.callPackage.call(./pkg.nix).call(new {})`), or
 # attribute paths in pkgs ("python3Packages.requests"); `import "nix:config"` reads the
-# configuration's values, `import "nix:lib"` has nixpkgs' lib (`lib.getExe.call(pkgs.htop).text`).
-# Function-typed options aren't in the schema.
+# configuration's values, `import "nix:lib"` has nixpkgs' lib (`lib.getExe.call(pkgs.htop).text`),
+# and `import "nix:path"` makes Nix paths relative to the Pkl file (`path.call("./secret.age")`).
+# Function-typed options take Nix functions (`lib.attrVals.call(new Listing { "requests" })`).
 { lib }:
 let
   inherit (lib) concatStrings concatStringsSep concatMap filter elemAt hasPrefix isOption;
@@ -20,11 +21,12 @@ let
   literal = s: "\"" + builtins.replaceStrings [ "\\" "\"" "\n" "\r" "\t" ] [ "\\\\" "\\\"" "\\n" "\\r" "\\t" ] s + "\"";
   identifier = n: "`" + builtins.replaceStrings [ "`" ] [ "" ] n + "`";
 
-  # Class names follow option paths ("services.openssh" -> O_services_openssh), with a hash where
-  # characters had to be replaced, to keep them distinct.
+  # Class names follow option paths ("services.openssh" -> O_services_openssh; an attrsOf's
+  # `<name>` is "name", a listOf's `*` "item"), with a hash where characters had to be replaced,
+  # to keep them distinct.
   className = prefix: path:
     let
-      joined = concatStringsSep "." path;
+      joined = concatStringsSep "." (map (c: if c == "<name>" then "name" else if c == "*" then "item" else c) path);
       safe = concatStrings (map (c: if builtins.match "[A-Za-z0-9]" c != null then c else "_") (lib.stringToCharacters joined));
     in
     prefix + safe + lib.optionalString (safe != builtins.replaceStrings [ "." ] [ "_" ] joined) ("_" + builtins.substring 0 6 (builtins.hashString "sha256" joined));
@@ -40,12 +42,10 @@ let
   concatMapLines = f: l: concatStrings (map f l);
 
   # Pkl's literal types are strings: other enums are a constraint.
+  enumValue = v: if builtins.isString v then literal v else if builtins.isBool v then lib.boolToString v else if v == null then "null" else toString v;
   enumType = values:
-    let
-      value = v: if builtins.isString v then literal v else if builtins.isBool v then lib.boolToString v else if v == null then "null" else toString v;
-    in
     if builtins.all builtins.isString values then concatStringsSep "|" (map literal values)
-    else "Any(List(${concatStringsSep ", " (map value values)}).contains(this))";
+    else "Any(List(${concatStringsSep ", " (map enumValue values)}).contains(this))";
 
   # The Pkl type of an option type: { type; classes; }, or null for what Pkl can't express
   # (functions). Submodules become classes; types nest `depth` deep at most (some are recursive,
@@ -62,16 +62,34 @@ let
     inherit (e) classes;
     default = "new ${type} {${lib.optionalString (e.kind == "object") " default = (_) -> ${e.default} "}}";
   };
+  # A union with objects in it (JSON-like values: `oneOf [ str (attrsOf ...) (listOf ...) ]`, as
+  # pkgs.formats have) takes Dynamic too: what amending its null default makes, as data is written
+  # (`settings { port = 80; hosts { "a" } }`).
   union = ts:
-    let ok = filter (t: t != null) ts;
+    let
+      ok = filter (t: t != null) ts;
+      dynamic = lib.optional (builtins.any (t: t.kind == "object") ok && !builtins.any (t: t.type == "Dynamic") ok) (simple "Dynamic");
+      all = ok ++ dynamic;
     in if ok == [ ] then null
     else if builtins.length ok == 1 then builtins.head ok
-    else { type = concatStringsSep "|" (map (t: t.type) ok); plain = concatStringsSep "|" (map (t: t.plain) ok); kind = "scalar"; classes = concatMap (t: t.classes) ok; };
-  # A long type (an enum of Home Assistant's components) as a type alias, which is there once
-  # (named like a class: see `schema`).
-  alias = path: type:
-    let hash = builtins.substring 0 16 (builtins.hashString "sha256" type); token = "@@class:${hash}@@";
-    in simple token // { classes = [ { inherit hash; name = className "E_" path; text = "typealias ${token} = ${type}\n"; class = false; } ]; };
+    else { type = concatStringsSep "|" (map (t: t.type) all); plain = concatStringsSep "|" (map (t: t.plain) all); kind = "scalar"; classes = concatMap (t: t.classes) ok; };
+  # A long enum (Home Assistant's components) as a type alias, which is there once (named like a
+  # class: see `schema`), checked by a function, so that an error doesn't print every value.
+  enumAlias = path: values:
+    let
+      list = concatStringsSep ", " (map enumValue values);
+      hash = builtins.substring 0 16 (builtins.hashString "sha256" list);
+      token = "@@class:${hash}@@";
+      base = if builtins.all builtins.isString values then "String" else "Any";
+    in
+    simple token // {
+      classes = [ {
+        inherit hash path;
+        name = className "E_" path;
+        class = false;
+        text = "typealias ${token} = ${base}(${token}_is(this))\nlocal const ${token}_values = Set(${list})\nlocal const function ${token}_is(v) = ${token}_values.contains(v)\n";
+      } ];
+    };
   pklType = path: depth: t:
     let
       name = t.name or "";
@@ -83,7 +101,7 @@ let
         unsignedInt8 = "Int(isBetween(0, 255))"; unsignedInt16 = "Int(isBetween(0, 65535))"; unsignedInt32 = "Int(isBetween(0, 4294967295))";
         signedInt8 = "Int(isBetween(-128, 127))"; signedInt16 = "Int(isBetween(-32768, 32767))"; signedInt32 = "Int(isBetween(-2147483648, 2147483647))";
       };
-      strings = [ "str" "string" "singleLineStr" "separatedString" "lines" "commas" "envVar" "path" "pathInStore" "pathWith" "passwdEntry" ];
+      strings = [ "str" "string" "singleLineStr" "separatedString" "lines" "commas" "envVar" "passwdEntry" ];
     in
     if depth >= maxDepth then simple "Any"
     else if name == "bool" then simple "Boolean"
@@ -96,11 +114,12 @@ let
     else if name == "nonEmptyStr" then simple "String(!isEmpty)"
     else if builtins.elem name strings || hasPrefix "strMatching" name then simple "String"
     else if name == "package" || name == "shellPackage" then simple "Package"
+    else if builtins.elem name [ "path" "pathInStore" "pathWith" ] then simple "Path"
     else if name == "enum" then
       let values = t.functor.payload.values or t.functor.payload or [ ];
       in if values == [ ] then null
       else if builtins.stringLength (enumType values) <= 200 then simple (enumType values)
-      else alias path (enumType values)
+      else enumAlias path values
     else if builtins.elem name [ "nullOr" "uniq" "unique" ] then element path
     else if name == "listOf" then
       let e = element (path ++ [ "*" ]);
@@ -110,7 +129,7 @@ let
       in if e == null then null else collection "Mapping<String, ${overridable e}>" "Mapping<String, ${e.plain}>" e
     else if name == "either" then union [ (pklType (path ++ [ "left" ]) deeper nested.left) (pklType (path ++ [ "right" ]) deeper nested.right) ]
     else if name == "coercedTo" then union [ (pklType (path ++ [ "from" ]) deeper nested.coercedType) (pklType path deeper nested.finalType) ]
-    else if name == "functionTo" then null
+    else if name == "functionTo" then simple "NixValue"
     # Freeform submodules take any attributes; those of a module class are whole configurations
     # (virtualisation.vmVariant is a NixOS one, with all of these options again).
     else if name == "submodule" then
@@ -136,7 +155,7 @@ let
     in
     {
       inherit class members;
-      classes = [ { inherit hash; name = className "O_" path; text = "class ${class} {\n${body}}\n"; class = true; } ] ++ concatMap (m: m.classes) members;
+      classes = [ { inherit hash path; name = className "O_" path; text = "class ${class} {\n${body}}\n"; class = true; } ] ++ concatMap (m: m.classes) members;
     };
 
   # An option's value, or an Override of one (as are the values of attrsOf, which the module
@@ -176,9 +195,13 @@ let
     function mkBefore(c): Override = mkOrder(500, c)
     function mkAfter(c): Override = mkOrder(1500, c)
 
+    /// A Nix value: from `import "nix:..."` (a function, a set), or a call of a Nix function.
+    typealias NixValue = Module|Typed(getClass().simpleName == "NixCall")
     /// A package: from `import "nix:pkgs"` (`pkgs.htop`), a call of a Nix function
     /// (`pkgs.callPackage.call(...)`), or an attribute path in pkgs (`"python3Packages.requests"`).
-    typealias Package = String|Module|Typed(getClass().simpleName == "NixCall")
+    typealias Package = String|NixValue
+    /// A path: a string, or a Nix path (`path.call("./secret.age")`, relative to the Pkl file).
+    typealias Path = String|NixValue
   '';
 
   # The values, with packages looked up in pkgs (as the options' types say, so only within values).
@@ -206,12 +229,17 @@ let
     else if name == "submodule" && !(nested ? freeformType) && builtins.isAttrs x then walk pkgs (t.getSubOptions [ ]) x
     else x;
   # The Pkl schema (source) of a NixOS configuration's options.
-  # Each class is there once, named after its shortest path (the first, of equally long ones).
+  # Each class is there once, named after one of its paths: preferably one of a set of them (an
+  # attrsOf's `<name>` or a listOf's `*`, like services.nginx.virtualHosts.<name>, rather than
+  # services.davis.nginx, a vhost too), then the shortest, then the first.
   schema = options:
     let
       root = namespace [ ] 0 options;
       classes = builtins.tail root.classes;
-      shorter = a: b: builtins.stringLength a.name < builtins.stringLength b.name || builtins.stringLength a.name == builtins.stringLength b.name && a.name < b.name;
+      each = c: if c.path == [ ] then 1 else if builtins.elem (lib.last c.path) [ "<name>" "*" ] then 0 else 1;
+      shorter = a: b:
+        let la = builtins.stringLength a.name; lb = builtins.stringLength b.name;
+        in each a < each b || each a == each b && (la < lb || la == lb && a.name < b.name);
       names = builtins.listToAttrs (map (c: { name = c.hash; value = c.name; }) (builtins.sort shorter classes));
       unique = builtins.attrValues (builtins.listToAttrs (map (c: { name = c.hash; value = c; }) classes));
       text = concatStrings [
@@ -242,5 +270,10 @@ in
   /** A NixOS module from a Pkl file that amends the schema. */
   module = file: lib.setDefaultModuleLocation file (args@{ options, config, lib, pkgs, ... }:
     if args.pklSchema or false then { }
-    else walk pkgs options (builtins.pkl { module = file; defaults = false; nix = { inherit config lib pkgs; }; }));
+    else walk pkgs options (builtins.pkl {
+      module = file;
+      defaults = false;
+      # path: a Nix path relative to the Pkl file (one in the store, as a ./path in Nix is)
+      nix = { inherit config lib pkgs; path = p: dirOf file + "/${p}"; };
+    }));
 }

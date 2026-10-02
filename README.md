@@ -326,13 +326,20 @@ nixosSystem { modules = [ (nix-truffle.lib.nixosPkl.module ./host.pkl) ]; }
   (systemd's units have many) are one class, named after the shortest of their paths. Types
   follow the options':
   - `bool`, `str`, `int` and ints with bounds (ports: `Int(isBetween(0, 65535))`), `float`;
-  - string enums as unions of literals (long ones as a type alias), other enums as a constraint;
-  - `listOf` as `Listing`, `attrsOf` as `Mapping`, `nullOr`, `either` and `coercedTo` as unions;
+  - string enums as unions of literals, other enums as a constraint; long ones (Home Assistant's
+    components) as a type alias checked by a function, so an error doesn't list every value (and
+    editors don't complete them);
+  - `listOf` as `Listing`, `attrsOf` as `Mapping`, `nullOr`, `either` and `coercedTo` as unions,
+    which take `Dynamic` too if they have objects in them (JSON-like values, as pkgs.formats'
+    settings have: `settings { port = 80; hosts { "a" } }`);
   - packages as values of `import "nix:pkgs"`, calls of Nix functions
     (`pkgs.writeShellScriptBin.call("greet").call("...")`), or attribute paths in pkgs
     (`"python3Packages.requests"`);
+  - paths as strings or Nix paths (`import "nix:path"`: `path.call("../secrets/x.age")`, relative
+    to the Pkl file), function-typed options as Nix values (`lib.attrVals.call(new Listing {
+    "requests" })` for `python3Packages: [ python3Packages.requests ]`);
   - freeform submodules (`settings`) and whole configurations (`virtualisation.vmVariant`) as
-    `Dynamic`, anything else as `Any`; function-typed options aren't in it.
+    `Dynamic`, anything else as `Any`.
 - The options the file sets are definitions (`builtins.pkl`'s `defaults = false`), also when set
   to null or to an empty listing (`defaultPackages {}`: none of NixOS's); unset ones aren't. So
   the system is the one the same definitions in Nix make: the example's `toplevel.drvPath` is the
@@ -351,7 +358,10 @@ nixosSystem { modules = [ (nix-truffle.lib.nixosPkl.module ./host.pkl) ]; }
   checks a configuration without Nix (as long as it doesn't import `nix:`).
 - For a configuration that has Pkl modules, `schemaOf nixosConfiguration` makes the schema
   without them (their module reads `specialArgs.pklSchema`): some option types depend on the
-  configuration, and the Pkl files need the schema to be read.
+  configuration, and the Pkl files need the schema to be read. That needs the configuration's
+  `extendModules` without evaluating it first (`c.config.system.build // c` does: its names are
+  the Pkl file's); otherwise make the first schema from the configuration without its Pkl
+  modules.
 - Pkl has no counterpart of `mkIf` on the configuration or `mkMerge`.
 
 ## Strings are bytes
