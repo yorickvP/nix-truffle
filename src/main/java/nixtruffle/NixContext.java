@@ -17,6 +17,8 @@ public final class NixContext {
     public final Env env;
     /** Results of {@code import}, per canonical path (Nix evaluates each file once). */
     public final Map<String, Object> importCache = new java.util.concurrent.ConcurrentHashMap<>();
+    /** While not null: the files imported (the language server's __nixTruffle.importsDuring). */
+    public volatile java.util.Set<String> importRecorder;
     /** Lookup path entries ({@code nixpkgs=flake:nixpkgs}, URLs) resolved so far; null if unusable. */
     public final Map<String, String> lookupPathCache = new java.util.concurrent.ConcurrentHashMap<>();
     /** {@code builtins.wasm}: modules compiled so far, by path. */

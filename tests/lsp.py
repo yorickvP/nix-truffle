@@ -106,7 +106,7 @@ with lib; {
 
 c = Client()
 caps = c.request("initialize", {"processId": None, "rootUri": tmp.as_uri(), "capabilities": {}})["capabilities"]
-check("capabilities", (caps["textDocumentSync"], "completionProvider" in caps, caps["definitionProvider"]), (1, True, True))
+check("capabilities", (caps["textDocumentSync"]["change"], "completionProvider" in caps, caps["definitionProvider"]), (1, True, True))
 c.notify("initialized", {})
 
 diags = c.open(main, text)
@@ -325,6 +325,72 @@ let cfg = config.services.nginx; in {
     wpkgs = mtext.replace("[ pkgs.hello ]", "with pkgs; [ hel ]")
     c.open(module, wpkgs)
     check("completion from with pkgs", "hello" in labels(c.at("textDocument/completion", module, wpkgs, "hel ]", 3)), True)
+    c.request("shutdown", None)
+    c.notify("exit", None)
+
+    # A flake: what its files are evaluated with.
+    fl = tmp / "flake"
+    (fl / "shared").mkdir(parents=True)
+    (fl / "pkgs").mkdir()
+    (fl / "flake.nix").write_text("""{
+  inputs.nixpkgs.url = "path:%s";
+  outputs = { self, nixpkgs }: let
+    system = "x86_64-linux";
+    base = { boot.loader.grub.enable = false; fileSystems."/".device = "x"; system.stateVersion = "25.11"; };
+  in {
+    overlays.default = final: prev: { myHello = prev.hello; };
+    legacyPackages.${system} = import nixpkgs { inherit system; overlays = [ self.overlays.default ]; };
+    nixosConfigurations.alpha = nixpkgs.lib.nixosSystem { inherit system; modules = [ base ./alpha.nix ]; };
+    nixosConfigurations.beta = nixpkgs.lib.nixosSystem { inherit system; modules = [ base ./beta.nix ./shared/thing.nix ]; };
+  };
+}
+""" % nixpkgs)
+    declares = '{ lib, ... }: { options.%s = lib.mkOption { type = lib.types.bool; default = false; description = "%s"; }; }\n'
+    (fl / "alpha.nix").write_text(declares % ("alpha.only", "Only alpha has this."))
+    (fl / "beta.nix").write_text(declares % ("beta.only", "Only beta has this."))
+    (fl / "shared" / "thing.nix").write_text("{ config, ... }: {\n  beta.only = true;\n}\n")
+    (fl / "pkgs" / "foo.nix").write_text("{ stdenv, myHello }:\nmyHello.name\n")
+    (fl / "overlay.nix").write_text("final: prev: {\n  x = prev.hello;\n}\n")
+
+    def session(settings=None):
+        c = Client()
+        c.request("initialize", {"processId": None, "rootUri": fl.as_uri(), "capabilities": {}, "initializationOptions": settings or {}})
+        c.notify("initialized", {})
+        return c
+
+    def complete_in(c, rel, old, new, marker, delta):
+        f = fl / rel
+        text = f.read_text().replace(old, new)
+        c.open(f.as_uri(), text)
+        return labels(c.at("textDocument/completion", f.as_uri(), text, marker, delta))
+
+    def evaluated_with(c, rel, marker, delta, old=None, new=None):
+        f = fl / rel
+        text = f.read_text() if old is None else f.read_text().replace(old, new)
+        c.open(f.as_uri(), text)
+        return c.at("textDocument/hover", f.as_uri(), text, marker, delta)["contents"]["value"].split("*evaluated with ")[-1].rstrip("*")
+
+    c = session()
+    check("the configuration that imports a module", complete_in(c, "shared/thing.nix", "beta.only = true;", "beta.on", "on\n", 2), ["only"])
+    check("said in hover", evaluated_with(c, "shared/thing.nix", "only", 1), "`nixosConfigurations.beta` (its `pkgs`)")
+    check("a package from the flake's package set", complete_in(c, "pkgs/foo.nix", "myHello.name", "myHello.nam", "nam\n", 3), ["name"])
+    check("said in hover", evaluated_with(c, "pkgs/foo.nix", "name", 1), "`legacyPackages.x86_64-linux`")
+    check("an overlay's prev", "hello" in complete_in(c, "overlay.nix", "prev.hello", "prev.hel", "hel;", 3), True)
+    # A module saved with another option: evaluated again.
+    (fl / "beta.nix").write_text(declares % ("beta.other", "Beta's other one."))
+    c.notify("textDocument/didSave", {"textDocument": {"uri": (fl / "beta.nix").as_uri()}})
+    c.open((fl / "beta.nix").as_uri(), (fl / "beta.nix").read_text())
+    c.notify("textDocument/didSave", {"textDocument": {"uri": (fl / "beta.nix").as_uri()}})
+    check("reloaded after a save", complete_in(c, "shared/thing.nix", "beta.only = true;", "beta.o", "o\n", 1), ["other"])
+    c.notify("workspace/didChangeConfiguration", {"settings": {"nix-truffle": {"nixpkgs": "upstream"}}})
+    check("the nixpkgs setting", complete_in(c, "pkgs/foo.nix", "myHello.name", "myHello.nam", "nam\n", 3), [])
+    c.request("shutdown", None)
+    c.notify("exit", None)
+    (fl / "beta.nix").write_text(declares % ("beta.only", "Only beta has this."))
+
+    c = session({"configurations": {"shared/**": "flake.nixosConfigurations.alpha"}})
+    check("a configuration by path", complete_in(c, "shared/thing.nix", "beta.only = true;", "alpha.on", "on\n", 2), ["only"])
+    check("said in hover", evaluated_with(c, "shared/thing.nix", "only", 1, "beta.only", "alpha.only"), "`flake.nixosConfigurations.alpha` (its `pkgs`)")
     c.request("shutdown", None)
     c.notify("exit", None)
 

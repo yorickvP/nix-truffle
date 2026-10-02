@@ -302,6 +302,8 @@ public final class FileBuiltins {
             return Apply.apply(ctx.corepkgValue("imported-drv-to-derivation.nix"), DrvImport.toValue(path), null);
         }
         String file = resolveExprPath(path);
+        java.util.Set<String> recorder = ctx.importRecorder;
+        if (recorder != null) recorder.add(file);
         if (scope != null) {
             NixAttrs s = attrs(scope);
             return parseFile(ctx, file, new HashSet<>(Arrays.asList(s.keys))).call(s);

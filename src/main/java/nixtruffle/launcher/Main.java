@@ -198,8 +198,14 @@ public final class Main {
                     return Repl.command(options, new String[0]);
                 }
                 case "lsp" -> {
-                    try (Context context = options.build(false)) {
-                        return nixtruffle.lsp.LspServer.run(context);
+                    // One evaluation thread: its evaluations are small, and parallel workers that
+                    // evaluate ahead would make what __nixTruffle.importsDuring records unreliable.
+                    options.config.append("eval-cores = 1\n");
+                    // Contexts of one engine (made again on a reload, with its compiled code), whose
+                    // output can't get into the protocol's, on stdout.
+                    try (org.graalvm.polyglot.Engine engine = org.graalvm.polyglot.Engine.newBuilder()
+                            .out(System.err).err(System.err).in(java.io.InputStream.nullInputStream()).build()) {
+                        return nixtruffle.lsp.LspServer.run(() -> options.builder(false).engine(engine).build());
                     } catch (java.io.IOException e) {
                         System.err.println("nix-truffle lsp: " + e.getMessage());
                         return 1;

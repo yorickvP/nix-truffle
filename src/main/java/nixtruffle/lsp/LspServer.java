@@ -49,7 +49,9 @@ public final class LspServer {
 
     private final InputStream in;
     private final OutputStream out;
-    private final Context context;
+    /** The context evaluation is in: a new one after a {@link #reload} (the worker's). */
+    private volatile Context context;
+    private final java.util.function.Supplier<Context> contexts;
     private final Set<String> globals = new HashSet<>();
     private final List<String> builtinNames = new ArrayList<>();
     private final Map<String, Doc> docs = new java.util.concurrent.ConcurrentHashMap<>();
@@ -64,10 +66,6 @@ public final class LspServer {
     private final Map<Object, Task> tasks = new java.util.concurrent.ConcurrentHashMap<>();
     private volatile Task running;
     private Value lspEval;
-    /** {@code name: request: ...}: the resolver for the NixOS configuration {@code name} (or the first). */
-    private Value resolvers;
-    private final Map<String, Value> resolverFor = new HashMap<>();
-    private List<String> configNames;
     private Value describe;
 
     /** An open document as it is at one time, and its parse. */
@@ -136,18 +134,24 @@ public final class LspServer {
         return t;
     }
 
-    LspServer(InputStream in, OutputStream out, Context context) {
+    LspServer(InputStream in, OutputStream out, java.util.function.Supplier<Context> contexts) {
         this.in = new BufferedInputStream(in);
         this.out = out;
-        this.context = context;
+        this.contexts = contexts;
+        this.context = contexts.get();
         Value names = context.eval("nix", "__nixTruffle.globals null");
         for (long i = 0; i < names.getArraySize(); i++) globals.add(names.getArrayElement(i).asString());
         Value builtins = context.eval("nix", "builtins.attrNames builtins");
         for (long i = 0; i < builtins.getArraySize(); i++) builtinNames.add(builtins.getArrayElement(i).asString());
     }
 
-    public static int run(Context context) throws IOException {
-        return new LspServer(System.in, System.out, context).serve();
+    public static int run(java.util.function.Supplier<Context> contexts) throws IOException {
+        LspServer server = new LspServer(System.in, System.out, contexts);
+        try {
+            return server.serve();
+        } finally {
+            server.context.close(true);
+        }
     }
 
     // ------------------------------------------------------------ transport
@@ -345,7 +349,7 @@ public final class LspServer {
                 if (rootUri instanceof String u) rootPath = Path.of(URI.create(Bytes.toJava(u))).toString();
                 if (params.get("initializationOptions") instanceof Map<?, ?>) initOptions = Json.obj(params.get("initializationOptions"));
                 yield obj("capabilities", obj(
-                        "textDocumentSync", 1L,
+                        "textDocumentSync", obj("openClose", true, "change", 1L, "save", obj("includeText", false)),
                         "definitionProvider", true,
                         "referencesProvider", true,
                         "documentHighlightProvider", true,
@@ -355,7 +359,26 @@ public final class LspServer {
                         "completionProvider", obj("triggerCharacters", List.of("."), "resolveProvider", true)),
                         "serverInfo", obj("name", "nix-truffle"));
             }
-            case "initialized", "$/setTrace", "workspace/didChangeConfiguration", "textDocument/didSave" -> null;
+            case "initialized", "$/setTrace" -> null;
+            case "workspace/didChangeConfiguration" -> {
+                // { settings: { "nix-truffle": {...} } }, or the settings themselves
+                if (params.get("settings") instanceof Map<?, ?> st) {
+                    Map<String, Object> all = Json.obj(st);
+                    initOptions = all.get("nix-truffle") instanceof Map<?, ?> mine ? Json.obj(mine) : all;
+                    worker.execute(this::reload);
+                }
+                yield null;
+            }
+            case "textDocument/didSave" -> {
+                // The flake, or a module's options or imports, may have changed: evaluate them again.
+                String uri = Bytes.toJava(Json.str(Json.obj(params.get("textDocument")).get("uri")));
+                Doc doc = docs.get(uri);
+                if (uri.endsWith("/flake.nix") || uri.endsWith("/flake.lock")
+                        || doc != null && (doc.text.contains("mkOption") || doc.text.contains("imports"))) {
+                    worker.execute(this::reload);
+                }
+                yield null;
+            }
             case "shutdown" -> {
                 shutdown = true;
                 yield null;
@@ -693,7 +716,7 @@ public final class LspServer {
             Value env = withDefining(doc, u.pos(), u.name());
             if (env != null) {
                 Object md = describeMarkdown(env, u.name(), "`" + u.name() + "` (from `with`)");
-                if (md != null) return obj("contents", obj("kind", "markdown", "value", Bytes.fromJava((String) md)), "range", range(doc, u.pos(), u.pos() + u.name().length()));
+                if (md != null) return obj("contents", obj("kind", "markdown", "value", Bytes.fromJava(md + footer(doc))), "range", range(doc, u.pos(), u.pos() + u.name().length()));
             }
         }
         String text = switch (u.kind()) {
@@ -719,7 +742,7 @@ public final class LspServer {
         if (p == null) return null;
         String name = text.substring(start, end);
         Object md = describeMarkdown(p, name, "`" + parent + "." + name + "`");
-        return md == null ? null : obj("contents", obj("kind", "markdown", "value", Bytes.fromJava((String) md)), "range", range(doc, start, end));
+        return md == null ? null : obj("contents", obj("kind", "markdown", "value", Bytes.fromJava(md + footer(doc))), "range", range(doc, start, end));
     }
 
     /** Hover markdown for {@code parent.name}: what it is, and its documentation; or null. */
@@ -999,7 +1022,7 @@ public final class LspServer {
                     + (d.getMember("detail").isNull() ? "" : " `" + d.getMember("detail").asString() + "`");
             String docs = documentation(d);
             if (!docs.isEmpty()) md += "\n\n" + docs;
-            return obj("contents", obj("kind", "markdown", "value", Bytes.fromJava(md)), "range", range(doc, start, end));
+            return obj("contents", obj("kind", "markdown", "value", Bytes.fromJava(md + footer(doc))), "range", range(doc, start, end));
         } catch (org.graalvm.polyglot.PolyglotException e) {
             return null;
         }
@@ -1039,61 +1062,241 @@ public final class LspServer {
 
     private Value noArguments;
 
+    // ------------------------------------------------------------ what a file is evaluated with
+
     /**
-     * What a file's functions get for their arguments: given {@code { names, optional }} (formals)
-     * or {@code { arg }}, the arguments (lazily). With the NixOS configuration whose name is a
-     * directory of the file's path ({@code nixos/machines/frumar/...}), else the flake's first.
+     * The session (one Nix value, made again after {@link #reload}): the workspace's flake, the
+     * settings' scope ({@code flake}, {@code inputs}, {@code system}, {@code upstream}), the
+     * package set, the NixOS configurations, what each imports, and the resolvers: what a file's
+     * functions get for their arguments, given {@code { names, optional }} (formals) or
+     * {@code { arg }}.
      */
-    private Value resolver(Doc doc) {
-        String name = null;
-        try {
-            if (configNames == null) {
-                Value names = resolvers().execute(Value.asValue(null)).execute(context.eval("nix", "{ arg = \"__configNames\"; }"));
-                configNames = new ArrayList<>();
-                for (long i = 0; i < names.getArraySize(); i++) configNames.add(names.getArrayElement(i).asString());
+    private static final String SESSION = """
+            let
+              system = builtins.currentSystem;
+              flake = %s;
+              inputs = if flake != null then flake.inputs else { };
+              upstream = if inputs ? nixpkgs then inputs.nixpkgs.legacyPackages.${system} else import <nixpkgs> { };
+              scope = { inherit flake inputs system upstream; };
+              configured = %s;
+              # The package set: the setting's, else the flake's own, else nixpkgs with its overlays,
+              # else its nixpkgs, else <nixpkgs>.
+              packages =
+                if configured != null then configured
+                else if flake != null && (flake.legacyPackages or { }) ? ${system} then { set = flake.legacyPackages.${system}; name = "legacyPackages.${system}"; }
+                else if flake != null && flake ? overlays && inputs ? nixpkgs then
+                  { set = import inputs.nixpkgs { inherit system; overlays = builtins.attrValues flake.overlays; }; name = "inputs.nixpkgs with the flake's overlays"; }
+                else if inputs ? nixpkgs then { set = upstream; name = "inputs.nixpkgs.legacyPackages.${system}"; }
+                else { set = upstream; name = "<nixpkgs>"; };
+              # Configurations without the module system's check that what is defined is declared:
+              # one being edited often isn't, and its options would be an error.
+              unchecked = c: if c != null && c ? extendModules then c.extendModules { modules = [ { _module.check = false; } ]; } else c;
+              configurations = builtins.mapAttrs (_: unchecked) (if flake != null then flake.nixosConfigurations or { } else { });
+            in {
+              inherit scope configurations unchecked;
+              packagesName = packages.name;
+              configurationNames = builtins.attrNames configurations;
+              flakePath = if flake != null then flake.outPath else null;
+              # The files a configuration imports: listing its options imports all of its modules.
+              imports = name: (__nixTruffle.importsDuring (_: builtins.attrNames configurations.${name}.options)).files;
+              # A NixOS module gets its configuration's pkgs; anything else the package set.
+              resolver = nixos: module:
+                let
+                  pkgs = if module && nixos != null then nixos.pkgs or nixos._module.args.pkgs else packages.set;
+                  special = { inherit pkgs; lib = pkgs.lib; }
+                    // (if nixos != null then { inherit (nixos) config options; } else { })
+                    // (if flake != null then inputs // { self = flake; inherit inputs; } else { });
+                  # an overlay's plain arguments (final: prev:, self: super:)
+                  plain = { final = pkgs; self = pkgs; prev = upstream; super = upstream; };
+                  # a package of python3Packages, called with its names
+                  nested = pkgs.python3Packages or { };
+                  value = name: special.${name} or pkgs.${name} or nested.${name} or (throw "nix-truffle lsp: no value for '${name}'");
+                in
+                request:
+                  if request ? arg then plain.${request.arg} or (value request.arg)
+                  else builtins.listToAttrs (map (name: { inherit name; value = value name; })
+                    (builtins.filter (n: special ? ${n} || pkgs ? ${n} || nested ? ${n} || !builtins.elem n request.optional) request.names));
             }
-            for (Path p = Path.of(URI.create(doc.uri)).getParent(); p != null && name == null; p = p.getParent()) {
-                if (p.getFileName() != null && configNames.contains(p.getFileName().toString())) name = p.getFileName().toString();
-            }
-        } catch (org.graalvm.polyglot.PolyglotException | IllegalArgumentException e) {
-            log("NixOS configurations: " + e.getMessage());
-            configNames = List.of();
+            """;
+
+    private Value session;
+    /** Each NixOS configuration's imported files (in the flake's store copy), once needed. */
+    private Map<String, Set<String>> importsOf;
+    private final Map<String, Value> resolverFor = new HashMap<>();
+    /** What a document's last evaluation was with, for hover. */
+    private final Map<String, String> usedFor = new HashMap<>();
+
+    private Value session() {
+        if (session == null) {
+            String flake = rootPath != null && Files.exists(Path.of(rootPath, "flake.nix")) ? "builtins.getFlake " + nixString("path:" + rootPath) : "null";
+            String nixpkgs = setting("nixpkgs");
+            String configured = nixpkgs == null ? "null" : "{ set = with scope; (" + nixpkgs + "); name = " + nixString(nixpkgs) + "; }";
+            session = context.eval("nix", SESSION.formatted(flake, configured));
         }
-        String key = String.valueOf(name);
-        Value r = resolverFor.get(key);
+        return session;
+    }
+
+    /** A setting (a string), or null. */
+    private String setting(String name) {
+        return initOptions.get(name) instanceof String v ? Bytes.toJava(v) : null;
+    }
+
+    /** A setting's expression, in its scope ({@code flake}, {@code inputs}, {@code system}, {@code upstream}). */
+    private Value inScope(String expression) {
+        return context.eval("nix", "session: with session.scope; (" + expression + ")").execute(session());
+    }
+
+    private Value unchecked(Value configuration) {
+        return session().getMember("unchecked").execute(configuration);
+    }
+
+    /** What a document is evaluated with: a NixOS configuration (or null), and whether it is a module. */
+    private record Selection(String key, Value nixos, boolean module, String label) {}
+
+    private Value resolver(Doc doc) {
+        Selection sel = select(doc);
+        usedFor.put(doc.uri, sel.label);
+        Value r = resolverFor.get(sel.key);
         if (r == null) {
-            r = resolvers().execute(name);
-            resolverFor.put(key, r);
+            r = session().getMember("resolver").execute(sel.nixos, sel.module);
+            resolverFor.put(sel.key, r);
         }
         return r;
     }
 
-    private Value resolvers() {
-        if (resolvers == null) {
-            String nixpkgs = initOptions.get("nixpkgs") instanceof String e ? Bytes.toJava(e) : "import <nixpkgs> { }";
-            String nixos = initOptions.get("nixos") instanceof String e ? Bytes.toJava(e)
-                    : "if configs == { } then null else configs.${if configName != null && configs ? ${configName} then configName else builtins.head (builtins.attrNames configs)}";
-            String flake = rootPath != null && Files.exists(Path.of(rootPath, "flake.nix")) ? "builtins.getFlake " + nixString("path:" + rootPath) : "null";
-            resolvers = context.eval("nix", """
-                    configName:
-                    let
-                      flake = %s;
-                      configs = if flake != null then flake.nixosConfigurations or { } else { };
-                      nixos = %s;
-                      pkgs = if nixos != null then nixos.pkgs else %s;
-                      special = { inherit pkgs; lib = pkgs.lib; }
-                        // (if nixos != null then { inherit (nixos) config options; } else { })
-                        // (if flake != null then flake.inputs // { self = flake; inherit (flake) inputs; } else { });
-                      value = name: special.${name} or pkgs.${name} or (throw "nix-truffle lsp: no value for '${name}'");
-                    in
-                    request:
-                      if request ? arg && request.arg == "__configNames" then builtins.attrNames configs
-                      else if request ? arg then value request.arg
-                      else builtins.listToAttrs (map (name: { inherit name; value = value name; })
-                        (builtins.filter (n: special ? ${n} || pkgs ? ${n} || !builtins.elem n request.optional) request.names))
-                    """.formatted(flake, nixos, nixpkgs));
+    /**
+     * The configuration for a document: a per-path setting ({@code configurations}: glob to
+     * expression), else the {@code nixos} setting, else the flake's configurations that import
+     * it (preferring one named in its path), else one named in its path, else the first.
+     */
+    private Selection select(Doc doc) {
+        String rel = relative(doc);
+        boolean module = moduleLike(doc);
+        if (initOptions.get("configurations") instanceof Map<?, ?> m && rel != null) {
+            for (Map.Entry<?, ?> e : m.entrySet()) {
+                String glob = Bytes.toJava((String) e.getKey());
+                if (java.nio.file.FileSystems.getDefault().getPathMatcher("glob:" + glob).matches(Path.of(rel)) && e.getValue() instanceof String expr) {
+                    return selection("expr:" + Bytes.toJava(expr), unchecked(inScope(Bytes.toJava(expr))), module, "`" + Bytes.toJava(expr) + "`");
+                }
+            }
         }
-        return resolvers;
+        String nixos = setting("nixos");
+        if (nixos != null) return selection("expr:" + nixos, unchecked(inScope(nixos)), module, "`" + nixos + "`");
+        List<String> names = new ArrayList<>();
+        Value configs = null;
+        try {
+            Value ns = session().getMember("configurationNames");
+            for (long i = 0; i < ns.getArraySize(); i++) names.add(ns.getArrayElement(i).asString());
+            configs = session().getMember("configurations");
+        } catch (org.graalvm.polyglot.PolyglotException e) {
+            if (e.isInterrupted() || e.isCancelled()) throw e;
+            log("NixOS configurations: " + e.getMessage());
+        }
+        if (names.isEmpty()) return selection("none", null, module, null);
+        List<String> named = new ArrayList<>();
+        for (Path p = Path.of(URI.create(doc.uri)).getParent(); p != null; p = p.getParent()) {
+            if (p.getFileName() != null && names.contains(p.getFileName().toString())) named.add(p.getFileName().toString());
+        }
+        String name = null;
+        if (names.size() > 1 && rel != null && (module || importsOf != null)) {
+            List<String> importing = importing(rel);
+            if (!importing.isEmpty()) {
+                module = true;
+                name = importing.stream().filter(named::contains).findFirst().orElse(importing.getFirst());
+            }
+        }
+        if (name == null) name = !named.isEmpty() ? named.getFirst() : names.getFirst();
+        return selection("config:" + name, configs.getMember(name), module, "`nixosConfigurations." + name + "`");
+    }
+
+    private Selection selection(String key, Value nixos, boolean module, String configuration) {
+        String packages = session().getMember("packagesName").asString();
+        String label = module && configuration != null ? configuration + " (its `pkgs`)" : "`" + packages + "`";
+        return new Selection(key + (module ? ":module" : ""), nixos, module, label);
+    }
+
+    /** The names of the configurations that import the workspace file {@code rel}. */
+    private List<String> importing(String rel) {
+        if (importsOf == null) {
+            long t = System.nanoTime();
+            importsOf = new LinkedHashMap<>();
+            Value names = session().getMember("configurationNames");
+            for (long i = 0; i < names.getArraySize(); i++) {
+                String n = names.getArrayElement(i).asString();
+                Set<String> files = new HashSet<>();
+                try {
+                    Value fs = session().getMember("imports").execute(n);
+                    for (long j = 0; j < fs.getArraySize(); j++) files.add(fs.getArrayElement(j).asString());
+                } catch (org.graalvm.polyglot.PolyglotException e) {
+                    if (e.isInterrupted() || e.isCancelled()) {
+                        importsOf = null;
+                        throw e;
+                    }
+                    log("the imports of " + n + ": " + e.getMessage());
+                }
+                importsOf.put(n, files);
+            }
+            log("what the NixOS configurations import: " + importsOf.size() + " in " + (System.nanoTime() - t) / 1_000_000 + " ms");
+        }
+        Value flakePath = session().getMember("flakePath");
+        if (flakePath.isNull()) return List.of();
+        String file = flakePath.asString() + "/" + rel;
+        List<String> out = new ArrayList<>();
+        importsOf.forEach((n, files) -> {
+            if (files.contains(file)) out.add(n);
+        });
+        return out;
+    }
+
+    /** The document's path in the workspace, or null. */
+    private String relative(Doc doc) {
+        if (rootPath == null) return null;
+        try {
+            Path p = Path.of(URI.create(doc.uri)), root = Path.of(rootPath);
+            return p.startsWith(root) ? root.relativize(p).toString() : null;
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    /** Whether a document looks like a NixOS module: a function of config, options or modulesPath, or of pkgs and `...`. */
+    private static boolean moduleLike(Doc doc) {
+        Expr root = treeOf(doc);
+        if (!(root instanceof Expr.Lambda l) || l.formals() == null) return false;
+        List<String> names = l.formals().formals().stream().map(Expr.Formal::name).toList();
+        return names.contains("config") || names.contains("options") || names.contains("modulesPath") || l.formals().ellipsis() && names.contains("pkgs");
+    }
+
+    /**
+     * Forgets everything evaluated, in a new context (the old one's caches would have the files,
+     * fetched flakes and copies to the store as they were): the flake, the configurations and
+     * what they import are evaluated again when needed.
+     */
+    private void reload() {
+        session = null;
+        importsOf = null;
+        resolverFor.clear();
+        usedFor.clear();
+        lspEval = null;
+        describe = null;
+        locate = null;
+        optionsHelper = null;
+        noArguments = null;
+        Context old = context;
+        context = contexts.get();
+        old.close(true);
+    }
+
+    /** The document's tree: as it is, else repaired, else the last that parsed. */
+    private static Expr treeOf(Doc doc) {
+        return doc.root != null ? doc.root : doc.repair != null ? doc.repair.root : doc.goodRoot;
+    }
+
+    /** A hover's note of what it was evaluated with: what a file's function got (if it is one). */
+    private String footer(Doc doc) {
+        String used = usedFor.get(doc.uri);
+        Expr root = treeOf(doc);
+        return used == null || !(root instanceof Expr.Lambda) ? "" : "\n\n---\n*evaluated with " + used + "*";
     }
 
     private static String nixString(String s) {

@@ -80,6 +80,27 @@ final class Internals {
             return nixtruffle.lsp.Evaluate.at(nixtruffle.util.Json.str(r.get("file")), nixtruffle.util.Json.str(r.get("text")),
                     ((Number) r.get("offset")).intValue(), nixtruffle.util.Json.str(r.get("expression")), a[1]);
         });
+        put(m, "importsDuring", 1, a -> {
+            // { value = f null; files = [ what evaluating it imported ]; }
+            // On the main thread only (Builtin's MAIN_ONLY): one recording at a time. With parallel
+            // evaluation, workers that evaluate ahead may import into another recording: the
+            // language server's context has eval-cores = 1.
+            NixContext ctx = NixContext.get(null);
+            java.util.Set<String> outer = ctx.importRecorder;
+            java.util.Set<String> recorder = java.util.concurrent.ConcurrentHashMap.newKeySet();
+            ctx.importRecorder = recorder;
+            Object value;
+            try {
+                value = nixtruffle.runtime.Thunk.force(nixtruffle.runtime.Apply.apply(a[0], nixtruffle.runtime.NixNull.INSTANCE, null));
+            } finally {
+                ctx.importRecorder = outer;
+                if (outer != null) outer.addAll(recorder);
+            }
+            TreeMap<String, Object> out = new TreeMap<>();
+            out.put("value", value);
+            out.put("files", new nixtruffle.runtime.NixList(new java.util.TreeSet<>(recorder).toArray()));
+            return nixtruffle.runtime.NixAttrs.fromMap(out);
+        });
         put(m, "lambdaPos", 1, a -> {
             // A function's position ({ file, line, column }), for the doc comment before it.
             if (!(nixtruffle.runtime.Thunk.force(a[0]) instanceof nixtruffle.runtime.NixLambda l)) return nixtruffle.runtime.NixNull.INSTANCE;

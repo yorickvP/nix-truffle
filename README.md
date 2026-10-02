@@ -417,12 +417,25 @@ LSP client: run `nix-truffle lsp` for files of type `nix`. It knows Nix the way 
   each syntax error on the way is reported.
 - **Evaluating**, for what's after a `.`, names from `with`, and attribute names in modules: the
   expression is evaluated as it would be at the cursor, in the scopes around it (`let`, recursive
-  sets, `with`), with the file's functions applied to what they would likely get: the workspace
-  flake's `self` and inputs, its NixOS configuration's `config`, `options`, `pkgs` and `lib` (the
-  configuration named in the file's path, `machines/frumar/...`, else the first), or
-  `import <nixpkgs> { }`, and anything else from `pkgs`, as callPackage does. Only what the
+  sets, `with`), with the file's functions applied to what they would likely get. Only what the
   cursor needs is evaluated: `pkgs.hel` completes in 0.4 s from a cold start, NixOS options in
-  about a second, later ones at once.
+  about a second, later ones at once. What a file gets:
+  - a NixOS module (a file a configuration imports, or a function of `config`, `options` or
+    `pkgs` and `...`): a NixOS configuration's `config`, `options`, `pkgs` and `lib`. Which one:
+    the one that imports the file (listing each configuration's options records the files it
+    imports, once, a couple of seconds for seven machines; one named in the file's path among
+    them, `machines/frumar/...`), else one named in its path, else the first. Configurations
+    are evaluated without the check that what is defined is declared, which one being edited
+    often fails;
+  - anything else (packages, overlays, ...): the package set, the flake's
+    `legacyPackages.${system}`, else nixpkgs with the flake's overlays, else its `nixpkgs`
+    input, else `<nixpkgs>`; names by callPackage's rules (then `python3Packages`'), an
+    overlay's `final`/`self` the package set and `prev`/`super` upstream nixpkgs, and the flake's
+    `self` and inputs.
+
+  Hover says what it was evaluated with. Saving `flake.nix`, `flake.lock` or a module with
+  options or imports evaluates it all again (in a new context: files, fetched flakes and copies
+  in the store as they are now).
   - completion of attributes (`pkgs.`, `lib.strings.`, `cfg.` with `cfg = config.services.nginx`,
     a local set's), of names from `with` (`with pkgs; [ hel`), and of NixOS options where a module
     sets them, through submodules (`services.nginx.virtualHosts."x".locations."/".proxyP`),
@@ -437,9 +450,23 @@ LSP client: run `nix-truffle lsp` for files of type `nix`. It knows Nix the way 
   request came; everything else is answered meanwhile. An evaluation is interrupted when it takes
   longer than `evalTimeout` (seconds, default 10) or its request is cancelled.
 
-The client's `initializationOptions` can set `nixpkgs` and `nixos` (Nix expressions: the
-NixOS configuration, like `(builtins.getFlake "/etc/nixos").nixosConfigurations.host`) and
-`evalTimeout`. Evaluation errors go to the client's log. `tests/lsp.py` is a scripted session.
+Settings (`initializationOptions`, or `workspace/didChangeConfiguration`'s `nix-truffle`) are
+expressions in a scope with the workspace's `flake`, its `inputs`, `system` and `upstream` (its
+`nixpkgs` input's packages, or `<nixpkgs>`):
+
+```json
+{
+  "nixpkgs": "flake.legacyPackages.${system}",
+  "nixos": "flake.nixosConfigurations.frumar",
+  "configurations": { "nixos/roles/**": "flake.nixosConfigurations.frumar" },
+  "evalTimeout": 10
+}
+```
+
+`nixpkgs` is the package set (`"upstream"`, or `"import inputs.nixpkgs { inherit system; overlays
+= [ flake.overlays.default ]; }"`), `nixos` the configuration for every module, `configurations`
+one for the files a glob matches. Evaluation errors go to the client's log. `tests/lsp.py` is a
+scripted session.
 
 Compared with nixd (2.9.2, the same scripted sessions): the same completion of `pkgs`, `lib` and
 NixOS options, hover and definitions of options and packages; nix-truffle also completes what
