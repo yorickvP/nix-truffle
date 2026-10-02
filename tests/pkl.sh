@@ -61,6 +61,15 @@ import "nix:self" as self
 count = self.main.port + 1
 main { port = 8080; enable = throw("not used") }
 EOF
+cat > calls.pkl <<'EOF'
+import "nix:f" as f
+now = f.inc.call(1).text
+curried = f.add.call(1).call(2).text
+list = f.pair.call("a").call(new Listing { "b" }).text
+path = "\(f.id.call(f.d).text)/bin/x"
+later = f.mk.call("y")
+same = f.id.call(f.d)
+EOF
 
 passed=0 failed=0
 # check NAME EXPECTED EXPR [OPTION...]: the first line of the output.
@@ -98,6 +107,8 @@ check "defaults = false: what the files set" '{ count = null; extra = [ "from-co
   'builtins.pkl { module = ./layered.pkl; defaults = false; }' --strict
 check "defaults = false: lazily" '8081' 'let r = builtins.pkl { module = ./lazy.pkl; defaults = false; nix.self = r; }; in r.count'
 check "defaults = false: Pkl's errors when used" 'error: Pkl: not used' 'let r = builtins.pkl { module = ./lazy.pkl; defaults = false; nix.self = r; }; in r.main.enable'
+check "calls of Nix functions" "[ \"2\" \"3\" \"[\\\"a\\\",[\\\"b\\\"]]\" true \"y\" true ]" \
+  'let d = derivation { name = "x"; builder = "/bin/sh"; system = "x86_64-linux"; }; r = builtins.pkl { module = ./calls.pkl; nix.f = { inc = x: x + 1; add = a: b: a + b; pair = a: b: [ a b ]; id = x: x; inherit d; mk = name: derivation { inherit name; builder = "/bin/sh"; system = "x86_64-linux"; }; }; }; in [ r.now r.curried r.list (builtins.hasContext r.path) r.later.name (r.same == d) ]' --strict
 check "a missing nix: attribute" "error: Pkl: I/O error loading module \`nix:d.missing\`." 'builtins.pkl { text = "import \"nix:d.missing\" as m\nx = m.value"; nix.d = { }; }'
 check "pure evaluation" "error: Pkl: access to absolute path '/etc/hostname' is forbidden in pure evaluation mode (use '--impure' to override)" \
   'builtins.pkl { text = "x = read(\"file:///etc/hostname\")"; }' --option pure-eval true
@@ -116,7 +127,7 @@ if [[ -n "${NIXPKGS:-}" ]]; then
     printf 'FAIL NixOS in Pkl\n  got: %s\n' "$systems"
   fi
   # examples/pkl/package: a package in Pkl, and one amending it, are the same as in Nix.
-  check "packages in Pkl" 'true' "let pkgs = import <nixpkgs> { }; p = import $root/examples/pkl/package { inherit pkgs; }; in p.hello-quiet.drvPath == (pkgs.stdenv.mkDerivation { pname = \"hello-quiet\"; inherit (pkgs.hello) version src; nativeBuildInputs = [ pkgs.perl ]; doCheck = false; configureFlags = [ \"--disable-nls\" ]; meta = { description = \"A program that produces a familiar, friendly greeting\"; homepage = \"https://www.gnu.org/software/hello/manual/\"; license = pkgs.lib.licenses.gpl3Plus; mainProgram = \"hello\"; }; }).drvPath" -I "nixpkgs=$NIXPKGS"
+  check "packages in Pkl" 'true' "let pkgs = import <nixpkgs> { }; p = import $root/examples/pkl/package { inherit pkgs; }; in p.hello-quiet.drvPath == (pkgs.stdenv.mkDerivation { pname = \"hello-quiet\"; version = \"2.12.3\"; src = pkgs.fetchurl { url = \"mirror://gnu/hello/hello-2.12.3.tar.gz\"; hash = \"sha256-DV9gFUOC/uELEUocNOeF2LH0kgc64tOm97FHaHs2aqA=\"; }; nativeBuildInputs = [ pkgs.perl ]; doCheck = false; configureFlags = [ \"--disable-nls\" ]; meta = { description = \"A program that produces a familiar, friendly greeting\"; homepage = \"https://www.gnu.org/software/hello/manual/\"; license = pkgs.lib.licenses.gpl3Plus; mainProgram = \"hello\"; }; }).drvPath" -I "nixpkgs=$NIXPKGS"
   # The schema of a configuration with a Pkl module, before there is one.
   check "NixOS schema without its Pkl module" 'true' "let pkl = import $root/nixos/pkl.nix { lib = import <nixpkgs/lib>; }; nixos = import <nixpkgs/nixos/lib/eval-config.nix> { system = \"x86_64-linux\"; modules = [ (pkl.module ./missing-schema.pkl) { system.stateVersion = \"25.11\"; } ]; }; in builtins.stringLength (pkl.schemaOf nixos) > 1000000" -I "nixpkgs=$NIXPKGS"
   printf 'amends "%s"\nservices { openssh { enabel = true } }\n' "$example/nixos.pkl" > typo.pkl

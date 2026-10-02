@@ -68,7 +68,8 @@ import java.util.regex.Pattern;
  *   <li>Pkl code reads Nix through {@code nix:} URIs into the {@code nix} attribute set given to
  *       {@code builtins.pkl}: {@code import "nix:pkgs" as pkgs} is a module whose properties are
  *       the attribute set's, each evaluated (in Nix) only when used; {@code read("nix:a.b")} is
- *       a value as text (derivations as their output path).
+ *       a value as text (derivations as their output path). A Nix function's module has
+ *       {@code call} ({@link #CALLABLE}).
  * </ul>
  * Strings that went from Nix to Pkl with a string context (store paths) get it back when they, or
  * strings containing them, come back.
@@ -202,7 +203,7 @@ final class Pkl {
             }
             if (output != null && Values.bool(output)) return string(e.evaluateOutputText(source), call);
             Object result = expression == null ? e.evaluate(source) : e.evaluateExpression(source, Bytes.toJava(Values.coerce(expression, false, false, new TreeSet<>(), null)));
-            return toNix(result, call);
+            return Thunk.force(toNix(result, call));
         } catch (PklException e) {
             throw error(e);
         }
@@ -292,6 +293,7 @@ final class Pkl {
         }
         // A module of a Nix value (import("nix:...").value, like a derivation): that value.
         if (v instanceof PModule m && "nix".equals(m.getModuleUri().getScheme())) return lookUp(call, path(m.getModuleUri()));
+        if (v instanceof PObject o && isNixCall(o.getClassInfo())) return call(toNix(o.get("fn"), call), toNix(o.get("arg"), call));
         if (v instanceof PObject o) {
             Map<String, Object> props = o.getProperties();
             // A Dynamic object with only elements: a list.
@@ -425,6 +427,11 @@ final class Pkl {
             if (v instanceof org.pkl.core.runtime.VmTyped t && t.isModuleObject()) {
                 URI uri = t.getModuleInfo().getModuleKey().getUri();
                 if ("nix".equals(uri.getScheme())) return lookUp(call, path(uri));
+            }
+            if (v instanceof org.pkl.core.runtime.VmTyped t && isNixCall(t.getVmClass().getPClassInfo())) {
+                Object fn = evaluate(() -> org.pkl.core.runtime.VmUtils.readMember(t, org.pkl.core.runtime.Identifier.get("fn")));
+                Object arg = evaluate(() -> org.pkl.core.runtime.VmUtils.readMember(t, org.pkl.core.runtime.Identifier.get("arg")));
+                return Thunk.force(Pkl.call(value(fn), value(arg)));
             }
             if (v instanceof org.pkl.core.runtime.VmObject o) return object(o);
             return toNix(evaluate(() -> {
@@ -648,11 +655,13 @@ final class Pkl {
     private static String moduleSource(Call call, List<String> path) {
         Object v = lookUp(call, path);
         StringBuilder sb = new StringBuilder();
+        if (v instanceof NixFunction || v instanceof NixAttrs a && a.get("__functor") != null) sb.append(CALLABLE_IMPORTS);
         if (v instanceof NixAttrs a) {
             // A derivation's attributes are hidden: it goes back to Nix as itself, not as a copy
             // of its attributes (which include itself: drv.out.out...).
             String modifier = Derivations.isDerivation(a) ? "hidden " : "";
             sb.append("hidden value = module\n");
+            if (a.get("__functor") != null) sb.append(CALLABLE);
             for (String key : a.keys) {
                 List<String> p = new ArrayList<>(path);
                 p.add(Bytes.toJava(key));
@@ -667,13 +676,76 @@ final class Pkl {
             }
             sb.append(" }\n");
         } else if (v instanceof NixFunction) {
-            sb.append("value = throw(").append(literal(uri(path) + " is a Nix function")).append(")\n");
+            sb.append("hidden value = module\n").append(CALLABLE);
         } else {
             sb.append("value = ");
             render(v, PType.UNKNOWN, sb, call);
             sb.append('\n');
         }
         return sb.toString();
+    }
+
+    /**
+     * What the module of a Nix function (or functor) has: {@code f.call(x)} is a {@code NixCall},
+     * which is {@code f x} when it goes back to Nix (lazily, the result as it is); its
+     * {@code text} is the result now, as {@code read("nix:...")} has values, through a read of
+     * {@code nix:@call?BASE64} (JSON of the call: {@code {"$nix": uri}} for nix: modules,
+     * {@code {"$call": [f, x]}} for calls).
+     */
+    private static final String CALLABLE_IMPORTS = "import \"pkl:reflect\" as __reflect\n";
+    private static final String CALLABLE = """
+            /// A call of this Nix function, which is its result when it goes back to Nix.
+            /// `.text` is the result now (a string, a derivation's output path, JSON).
+            function call(x): NixCall = new { fn = module; arg = x }
+            class NixCall {
+              fn: Typed
+              arg: Any
+              /// A call of the result (a curried function's next argument).
+              function call(x): NixCall = let (self = this) new NixCall { fn = self; arg = x }
+              hidden text: String = read("nix:@call?" + new JsonRenderer {}.renderValue(__encode(this)).base64)
+            }
+            local const function __encode(v): Any =
+              if (v is Typed && v.getClass().simpleName == "NixCall") Map("$call", List(__encode(v.fn), __encode(v.arg)))
+              else if (v is Module && __reflect.Module(v).uri.startsWith("nix:")) Map("$nix", __reflect.Module(v).uri)
+              else if (v is Listing || v is List || v is Set) v.toList().map((e) -> __encode(e))
+              else if (v is Map) v.mapValues((_, e) -> __encode(e))
+              else if (v is Dynamic && !v.toList().isEmpty) v.toList().map((e) -> __encode(e))
+              else if (v is Mapping || v is Dynamic || v is Typed) v.toMap().mapValues((_, e) -> __encode(e))
+              else v
+            """;
+
+    /** A call that Pkl's {@code read} sent (see {@link #CALLABLE}), evaluated. */
+    private static Object callFrom(Call call, String base64) {
+        String json = new String(java.util.Base64.getDecoder().decode(base64), StandardCharsets.UTF_8);
+        return resolve(call, Json.fromJSON(Bytes.fromJava(json)));
+    }
+
+    private static Object resolve(Call call, Object v) {
+        if (v instanceof NixAttrs a) {
+            if (a.size() == 1 && a.get("$nix") != null) return lookUp(call, path(URI.create(Bytes.toJava((String) Values.string(a.get("$nix"))))));
+            if (a.size() == 1 && a.get("$call") instanceof NixList l && l.items.length == 2) {
+                return Thunk.force(nixtruffle.runtime.Apply.apply(resolve(call, l.items[0]), resolve(call, l.items[1]), null));
+            }
+            TreeMap<String, Object> out = new TreeMap<>();
+            for (int i = 0; i < a.size(); i++) out.put(a.keys[i], resolve(call, a.forceAt(i)));
+            return NixAttrs.fromMap(out);
+        }
+        if (v instanceof NixList l) {
+            Object[] items = new Object[l.items.length];
+            for (int i = 0; i < items.length; i++) items[i] = resolve(call, Thunk.force(l.items[i]));
+            return new NixList(items);
+        }
+        if (NixString.is(v)) return string(Bytes.toJava(Values.string(v)), call);
+        return v;
+    }
+
+    /** A call's function and argument, from a NixCall (see {@link #CALLABLE}): lazily, its result. */
+    private static Object call(Object fn, Object arg) {
+        return nixtruffle.runtime.Apply.lazy(fn, arg);
+    }
+
+    private static boolean isNixCall(org.pkl.core.PClassInfo<?> c) {
+        return c.getSimpleName().equals("NixCall") && "nix".equals(c.getModuleUri().getScheme());
     }
 
     private record NixModules(Call call) implements ModuleKeyFactory {
@@ -731,7 +803,8 @@ final class Pkl {
         public Optional<Object> read(URI uri) throws IOException {
             try {
                 return Optional.of(call.inNix(() -> {
-                    Object v = lookUp(call, path(uri));
+                    String ssp = uri.getSchemeSpecificPart();
+                    Object v = ssp.startsWith("@call?") ? callFrom(call, ssp.substring("@call?".length())) : lookUp(call, path(uri));
                     if (v instanceof NixAttrs a && !Derivations.isDerivation(a) || v instanceof NixList) {
                         return Bytes.toJava(Json.toJSON(v, new LinkedHashSet<>(), false, false));
                     }

@@ -2,6 +2,7 @@
 amends "nixos.pkl"
 import "nix:pkgs" as pkgs
 import "nix:config" as config
+import "nix:lib" as lib
 
 networking {
   hostName = "pkl-demo"
@@ -19,7 +20,11 @@ users {
 }
 environment {
   // Packages: from pkgs, or as attribute paths in it.
-  systemPackages { pkgs.htop; pkgs.git; "python3Packages.requests" }
+  systemPackages {
+    pkgs.htop; pkgs.git; "python3Packages.requests"
+    // Calls of Nix functions: their results when they go back to Nix; `.text` now.
+    pkgs.writeShellScriptBin.call("greet").call("exec \(lib.getExe.call(pkgs.hello).text) --greeting hi")
+  }
   // Set to empty, unlike unset: none of NixOS's default packages (nano, perl, rsync, strace).
   defaultPackages {}
   // The configuration's values, as NixOS has them (its defaults, other modules' definitions).

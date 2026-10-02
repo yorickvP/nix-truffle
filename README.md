@@ -217,6 +217,13 @@ its Java API) on the JVM. Three directions work (see `examples/pkl`, `tests/pkl.
   list of derivations. Store paths that come back keep their string context, also within other
   strings (`"\(pkgs.hello.outPath)/bin/hello"`), so derivations that use them depend on the
   right derivations.
+- **Pkl calling Nix functions**: a Nix function's (or functor's) module has `call`.
+  `pkgs.fetchurl.call(new { url = "..."; hash = "..." })` is a `NixCall` that is the call's result
+  when it goes back to Nix: Nix evaluates it then, lazily, and it is the derivation itself. A
+  call's `text` is its result now, as text (as `read` has values), for Pkl to use:
+  `"\(lib.getExe.call(pkgs.hello).text) --greeting hi"`. Curried functions take
+  `f.call(a).call(b)`. (Pkl can't get other values from outside at run time: `read` is text,
+  imports are constant, so `text` sends the call as JSON in the URI of a `read`.)
 
 `builtins.pkl` takes `module` (a path) or `text`, and optionally `amend` (with `module`),
 `expression` (evaluated in the module instead of the whole module), `output`, `defaults`, and
@@ -247,7 +254,7 @@ Values:
 - In pure evaluation, the files Pkl reads must be ones Nix could read, and Pkl packages, `https:`
   and environment variables are off.
 - Pkl's functions can't come back (Pkl doesn't export them: such properties must be `local` or
-  `hidden`), and `nix:` paths are attribute paths, so Pkl can't call Nix functions yet.
+  `hidden`).
 - `amend` assigns every attribute (`name = ...`), replacing the module's default rather than
   amending it.
 - Native images leave Pkl out: its language needs a native-image configuration of its own.
@@ -263,8 +270,11 @@ amends "derivation.pkl"
 import "nix:pkgs" as pkgs
 
 pname = "hello"
-version = pkgs.hello.version
-src = pkgs.hello.src
+version = "2.12.3"
+src = pkgs.fetchurl.call(new Dynamic {
+  url = "mirror://gnu/hello/hello-\(version).tar.gz"
+  hash = "sha256-DV9gFUOC/uELEUocNOeF2LH0kgc64tOm97FHaHs2aqA="
+})
 doCheck = true
 meta { mainProgram = "hello"; license = pkgs.lib.licenses.gpl3Plus }
 ```
@@ -316,7 +326,8 @@ nixosSystem { modules = [ (nix-truffle.lib.nixosPkl.module ./host.pkl) ]; }
   - `bool`, `str`, `int` and ints with bounds (ports: `Int(isBetween(0, 65535))`), `float`;
   - string enums as unions of literals, other enums as a constraint;
   - `listOf` as `Listing`, `attrsOf` as `Mapping`, `nullOr`, `either` and `coercedTo` as unions;
-  - packages as values of `import "nix:pkgs"` or attribute paths in pkgs
+  - packages as values of `import "nix:pkgs"`, calls of Nix functions
+    (`pkgs.writeShellScriptBin.call("greet").call("...")`), or attribute paths in pkgs
     (`"python3Packages.requests"`);
   - freeform submodules (`settings`) and whole configurations (`virtualisation.vmVariant`) as
     `Dynamic`, anything else as `Any`; function-typed options aren't in it.
@@ -328,7 +339,7 @@ nixosSystem { modules = [ (nix-truffle.lib.nixosPkl.module ./host.pkl) ]; }
   `mkDefault`, `mkOverride(priority, x)`, `mkBefore`, `mkAfter`, `mkOrder`, which make the data
   that Nix's `lib.mkOverride` and `lib.mkOrder` do. Pkl checks their content's type too
   (unless the type has classes of the schema: those, NixOS checks).
-- `import "nix:pkgs"` and `import "nix:config"` are the configuration's: `config` has its final
+- `import "nix:pkgs"`, `"nix:lib"` and `"nix:config"` are the configuration's: `config` has its final
   values (NixOS's defaults, other modules' definitions). Use them in values, not to decide what is
   set (`when (config.x) { ... }` makes the definitions depend on the configuration, which is made
   from them).
@@ -339,8 +350,7 @@ nixosSystem { modules = [ (nix-truffle.lib.nixosPkl.module ./host.pkl) ]; }
 - For a configuration that has Pkl modules, `schemaOf nixosConfiguration` makes the schema
   without them (their module reads `specialArgs.pklSchema`): some option types depend on the
   configuration, and the Pkl files need the schema to be read.
-- Pkl has no counterpart of the module system's functions (`mkIf` on the configuration,
-  `mkMerge`, options' `apply`); values are data.
+- Pkl has no counterpart of `mkIf` on the configuration or `mkMerge`.
 
 ## Strings are bytes
 

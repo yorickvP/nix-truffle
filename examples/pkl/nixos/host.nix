@@ -4,7 +4,10 @@
   networking.firewall.allowedTCPPorts = [ 22 80 443 ];
   time.timeZone = "Europe/Amsterdam";
   users.users.alice = { isNormalUser = true; description = "Alice"; extraGroups = [ "wheel" "networkmanager" ]; };
-  environment.systemPackages = [ pkgs.htop pkgs.git pkgs.python3Packages.requests ];
+  environment.systemPackages = [
+    pkgs.htop pkgs.git pkgs.python3Packages.requests
+    (pkgs.writeShellScriptBin "greet" "exec ${lib.getExe pkgs.hello} --greeting hi")
+  ];
   environment.defaultPackages = [ ];
   environment.etc.motd.text = "Welcome to ${config.networking.hostName}, NixOS ${config.system.nixos.release}";
   services.openssh = { enable = true; settings = { PermitRootLogin = "no"; PasswordAuthentication = false; }; };

@@ -2,8 +2,11 @@ amends "derivation.pkl"
 import "nix:pkgs" as pkgs
 
 pname = "hello"
-version = pkgs.hello.version
-src = pkgs.hello.src
+version = "2.12.3"
+src = pkgs.fetchurl.call(new Dynamic {
+  url = "mirror://gnu/hello/hello-\(version).tar.gz"
+  hash = "sha256-DV9gFUOC/uELEUocNOeF2LH0kgc64tOm97FHaHs2aqA="
+})
 nativeBuildInputs { pkgs.perl }
 doCheck = true
 meta {

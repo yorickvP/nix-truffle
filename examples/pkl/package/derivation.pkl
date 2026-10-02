@@ -2,8 +2,9 @@
 /// Packages are Nix values from `import "nix:pkgs"`.
 module derivation
 
-/// A Nix value: a derivation (a package, a source) or a set like a license.
-typealias Nix = Module
+/// A Nix value: a derivation (a package, a source) or a set like a license, from
+/// `import "nix:pkgs"`, or a call of a Nix function (`pkgs.fetchurl.call(new { ... })`).
+typealias Nix = Module|Typed(getClass().simpleName == "NixCall")
 
 pname: String(matches(Regex(#"[A-Za-z0-9+._-]+"#)))
 version: String(!isEmpty)

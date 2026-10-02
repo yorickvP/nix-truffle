@@ -9,8 +9,10 @@
 # The options that the file sets become definitions, also when they're set to null or to an
 # empty listing (builtins.pkl's `defaults = false`); the others don't. Values can be overrides,
 # like `module.mkForce(false)` (Nix's lib.mkForce). Packages are values of `import "nix:pkgs"`
-# (`pkgs.htop`) or attribute paths in pkgs ("python3Packages.requests"); `import "nix:config"`
-# reads the configuration's values. Function-typed options aren't in the schema.
+# (`pkgs.htop`), calls of Nix functions (`pkgs.callPackage.call(./pkg.nix).call(new {})`), or
+# attribute paths in pkgs ("python3Packages.requests"); `import "nix:config"` reads the
+# configuration's values, `import "nix:lib"` has nixpkgs' lib (`lib.getExe.call(pkgs.htop).text`).
+# Function-typed options aren't in the schema.
 { lib }:
 let
   inherit (lib) concatStrings concatStringsSep concatMap filter elemAt hasPrefix isOption;
@@ -87,7 +89,7 @@ let
     else if hasPrefix "number" name then simple "Number"
     else if name == "nonEmptyStr" then simple "String(!isEmpty)"
     else if builtins.elem name strings || hasPrefix "strMatching" name then simple "String"
-    else if name == "package" || name == "shellPackage" then simple "String|Module"
+    else if name == "package" || name == "shellPackage" then simple "Package"
     else if name == "enum" then
       let values = t.functor.payload.values or t.functor.payload or [ ];
       in if values == [ ] then null else simple (enumType values)
@@ -161,6 +163,10 @@ let
     function mkOrder(p: Int, c): Override = new { _type = "order"; priority = p; content = c }
     function mkBefore(c): Override = mkOrder(500, c)
     function mkAfter(c): Override = mkOrder(1500, c)
+
+    /// A package: from `import "nix:pkgs"` (`pkgs.htop`), a call of a Nix function
+    /// (`pkgs.callPackage.call(...)`), or an attribute path in pkgs (`"python3Packages.requests"`).
+    typealias Package = String|Module|Typed(getClass().simpleName == "NixCall")
   '';
 
   # The values, with packages looked up in pkgs (as the options' types say, so only within values).
@@ -214,7 +220,7 @@ in
   schemaOf = configuration: schema (configuration.extendModules { specialArgs.pklSchema = true; }).options;
 
   /** A NixOS module from a Pkl file that amends the schema. */
-  module = file: lib.setDefaultModuleLocation file (args@{ options, config, pkgs, ... }:
+  module = file: lib.setDefaultModuleLocation file (args@{ options, config, lib, pkgs, ... }:
     if args.pklSchema or false then { }
-    else walk pkgs options (builtins.pkl { module = file; defaults = false; nix = { inherit config pkgs; }; }));
+    else walk pkgs options (builtins.pkl { module = file; defaults = false; nix = { inherit config lib pkgs; }; }));
 }
