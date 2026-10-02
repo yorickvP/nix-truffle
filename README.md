@@ -460,7 +460,8 @@ LSP client: run `nix-truffle lsp` for files of type `nix`. It knows Nix the way 
   - inlay hints: the version of the packages a file names (`pkgs.hello` 2.12.3, `with pkgs;
     [ htop ]` 3.5.3), and in a module the default of the options it defines, where that's
     short, not empty (null, false, `[ ]`, ...) and not what's written (`peer-port = 54735;
-    default: 51413`);
+    default: 51413`); asked for again (workspace/inlayHint/refresh) once the import index is
+    ready and after a reload;
   - quick fixes (code actions): the name a "did you mean" meant, the `;` (or bracket, quote) a
     syntax error misses;
   - go to definition of attributes: a package's `meta.position`, an option's declarations, a

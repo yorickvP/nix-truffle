@@ -22,6 +22,7 @@ class Client:
         self.proc = subprocess.Popen([truffle, "lsp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
         self.next_id = 0
         self.diagnostics = {}
+        self.server_requests = []
 
     def send(self, msg):
         body = json.dumps(dict(msg, jsonrpc="2.0")).encode()
@@ -49,6 +50,9 @@ class Client:
             msg = self.read()
             if msg.get("method") == "textDocument/publishDiagnostics":
                 self.diagnostics[msg["params"]["uri"]] = msg["params"]["diagnostics"]
+            elif "method" in msg and "id" in msg:
+                self.server_requests.append(msg["method"])
+                self.send({"id": msg["id"], "result": None})
             elif msg.get("id") == self.next_id:
                 if "error" in msg:
                     raise RuntimeError(msg["error"])
@@ -470,9 +474,9 @@ let cfg = config.services.nginx; in {
     (fl / "dots").mkdir()
     (fl / "dots" / "main.nix").write_text("{ config, pkgs, ... }: {\n  # a comment\n  homeOnly = true;\n}\n")
 
-    def session(settings=None):
+    def session(settings=None, capabilities=None):
         c = Client()
-        c.request("initialize", {"processId": None, "rootUri": fl.as_uri(), "capabilities": {}, "initializationOptions": settings or {}})
+        c.request("initialize", {"processId": None, "rootUri": fl.as_uri(), "capabilities": capabilities or {}, "initializationOptions": settings or {}})
         c.notify("initialized", {})
         return c
 
@@ -488,9 +492,10 @@ let cfg = config.services.nginx; in {
         c.open(f.as_uri(), text)
         return c.at("textDocument/hover", f.as_uri(), text, marker, delta)["contents"]["value"].split("*evaluated with ")[-1].rstrip("*")
 
-    c = session()
+    c = session(capabilities={"workspace": {"inlayHint": {"refreshSupport": True}}})
     check("the configuration that imports a module", complete_in(c, "shared/thing.nix", "beta.only = true;", "beta.on", "on\n", 2), ["only"])
     check("said in hover", evaluated_with(c, "shared/thing.nix", "only", 1), "`nixosConfigurations.beta` (its `pkgs`)")
+    check("inlay hints refreshed once the index is ready", c.server_requests, ["workspace/inlayHint/refresh"])
     check("a package from the flake's package set", complete_in(c, "pkgs/foo.nix", "myHello.name", "myHello.nam", "nam\n", 3), ["name"])
     check("said in hover", evaluated_with(c, "pkgs/foo.nix", "name", 1), "`legacyPackages.x86_64-linux`")
     foo = fl / "pkgs" / "foo.nix"

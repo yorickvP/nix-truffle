@@ -69,6 +69,9 @@ public final class LspServer {
     private final Map<String, List<EvalDiagnostic>> evalDiagnostics = new java.util.concurrent.ConcurrentHashMap<>();
     /** Whether the client takes snippets in completion items. */
     private volatile boolean snippets;
+    /** Whether the client asks for inlay hints again when told (workspace/inlayHint/refresh). */
+    private volatile boolean refreshHints;
+    private long serverRequests;
 
     /** The thread that evaluates (all of the fields below are its), and the timeouts' timer. */
     private final java.util.concurrent.ExecutorService worker = java.util.concurrent.Executors.newSingleThreadExecutor(r -> daemon(r, "lsp-eval"));
@@ -290,6 +293,8 @@ public final class LspServer {
             }
             case "warmUp" -> {
                 importing("");
+                // (hints asked for meanwhile may have timed out, or been given up on)
+                refreshHints();
                 yield null;
             }
             default -> throw new Unknown();
@@ -339,6 +344,20 @@ public final class LspServer {
         send(msg);
     }
 
+    /** Has the client ask for inlay hints again (what they show was evaluated before a reload, say). */
+    private void refreshHints() {
+        if (!refreshHints) return;
+        // (the answer, a message with this id and no method, is ignored)
+        Map<String, Object> msg = new TreeMap<>();
+        msg.put("id", "nix-truffle/" + ++serverRequests);
+        msg.put("method", "workspace/inlayHint/refresh");
+        try {
+            send(msg);
+        } catch (IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+    }
+
     private void notify(String method, Object params) {
         Map<String, Object> msg = new TreeMap<>();
         msg.put("method", method);
@@ -372,6 +391,8 @@ public final class LspServer {
                 snippets = params.get("capabilities") instanceof Map<?, ?> caps && caps.get("textDocument") instanceof Map<?, ?> td
                         && td.get("completion") instanceof Map<?, ?> cm && cm.get("completionItem") instanceof Map<?, ?> ci
                         && Boolean.TRUE.equals(ci.get("snippetSupport"));
+                refreshHints = params.get("capabilities") instanceof Map<?, ?> caps && caps.get("workspace") instanceof Map<?, ?> ws
+                        && ws.get("inlayHint") instanceof Map<?, ?> ih && Boolean.TRUE.equals(ih.get("refreshSupport"));
                 yield obj("capabilities", obj(
                         "textDocumentSync", obj("openClose", true, "change", 1L, "save", obj("includeText", false)),
                         "definitionProvider", true,
@@ -2265,6 +2286,7 @@ public final class LspServer {
         Context old = context;
         context = contexts.get();
         old.close(true);
+        refreshHints();
     }
 
     /** The document's tree: as it is, else repaired, else the last that parsed. */
