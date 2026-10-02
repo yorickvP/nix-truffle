@@ -645,9 +645,25 @@ public final class LspServer {
         }
     }
 
-    private static Map<String, Object> fileLocation(String file, long line, long column) {
+    private Map<String, Object> fileLocation(String file, long line, long column) {
         Map<String, Object> pos = obj("line", Math.max(0, line - 1), "character", Math.max(0, column - 1));
-        return obj("uri", Bytes.fromJava(Path.of(file).toUri().toString()), "range", obj("start", pos, "end", pos));
+        return obj("uri", Bytes.fromJava(Path.of(local(file)).toUri().toString()), "range", obj("start", pos, "end", pos));
+    }
+
+    /**
+     * A file of the flake's store copy as the workspace's (as long as it is there): the one being
+     * edited. (Its lines are the copy's: as the workspace was when the flake was last evaluated.)
+     */
+    private String local(String file) {
+        if (rootPath == null || session == null) return file;
+        try {
+            String flake = flakePath();
+            if (flake == null || !file.startsWith(flake + "/")) return file;
+            Path p = Path.of(rootPath, file.substring(flake.length() + 1));
+            return Files.exists(p) ? p.toString() : file;
+        } catch (org.graalvm.polyglot.PolyglotException | java.nio.file.InvalidPathException e) {
+            return file;
+        }
     }
 
     /** Where {@code parent.name} is defined: as {@link #locate} says. */
@@ -2259,12 +2275,28 @@ public final class LspServer {
 
     private Value session() {
         if (session == null) {
-            String flake = rootPath != null && Files.exists(Path.of(rootPath, "flake.nix")) ? "builtins.getFlake " + nixString("path:" + rootPath) : "null";
+            String flake = rootPath != null && Files.exists(Path.of(rootPath, "flake.nix")) ? "builtins.getFlake " + nixString(flakeRef(rootPath)) : "null";
             String nixpkgs = setting("nixpkgs");
             String configured = nixpkgs == null ? "null" : "{ set = with scope; (" + nixpkgs + "); name = " + nixString(nixpkgs) + "; }";
             session = context.eval("nix", SESSION.formatted(flake, configured, flake));
         }
         return session;
+    }
+
+    /**
+     * The workspace's flake as `nix build .` has it: in a git repository its files git tracks
+     * (and their changes), as {@code git+file}; else the directory's (with {@code path:}, all
+     * of it, `.git` and all, is copied to the store).
+     */
+    static String flakeRef(String root) {
+        Path dir = Path.of(root).toAbsolutePath().normalize();
+        for (Path p = dir; p != null; p = p.getParent()) {
+            if (Files.exists(p.resolve(".git"))) {
+                String sub = p.relativize(dir).toString();
+                return "git+file://" + p + (sub.isEmpty() ? "" : "?dir=" + sub);
+            }
+        }
+        return "path:" + root;
     }
 
     /** A setting (a string), or null. */

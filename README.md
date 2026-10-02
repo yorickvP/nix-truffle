@@ -446,7 +446,10 @@ LSP client: run `nix-truffle lsp` for files of type `nix`. It knows Nix the way 
 
   Hover says what it was evaluated with. Saving `flake.nix`, `flake.lock` or a module with
   options or imports evaluates it all again (in a new context: files, fetched flakes and copies
-  in the store as they are now).
+  in the store as they are now). The flake is the one `nix build .` would see: in a git
+  repository the files git tracks, changes included (`git+file`; a new file needs `git add`),
+  copied to the store when it's evaluated (at the start, and then again); locations in that
+  copy are given as the workspace's files.
   - completion of attributes (`pkgs.`, `lib.strings.`, `cfg.` with `cfg = config.services.nginx`,
     a local set's), of names from `with` (`with pkgs; [ hel`), and of NixOS options where a module
     sets them, through submodules (`services.nginx.virtualHosts."x".locations."/".proxyP`),

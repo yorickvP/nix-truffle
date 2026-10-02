@@ -540,6 +540,11 @@ let cfg = config.services.nginx; in {
     check("definition of an argument: where its value is", c.at("textDocument/definition", foo.as_uri(), foo.read_text(), "myHello.name", 2)[0]["uri"].endswith("/pkgs/by-name/he/hello/package.nix"), True)
     check("the arguments a package is called with", complete_in(c, "pkgs/scoped/package.nix", "special.a", "special.", "special.;", 8), ["a"])
     check("said in hover", evaluated_with(c, "pkgs/scoped/package.nix", "special.a", 2), "the arguments `packages.x86_64-linux.scoped` calls it with")
+    scoped = fl / "pkgs" / "scoped" / "package.nix"
+    c.open(scoped.as_uri(), scoped.read_text())
+    # (in the workspace, not the flake's copy in the store)
+    check("definition of what the flake defines", [(l["uri"], l["range"]["start"]["line"]) for l in c.at("textDocument/definition", scoped.as_uri(), scoped.read_text(), "special.a", 9)],
+          [((fl / "flake.nix").as_uri(), 10)])
     check("an overlay's prev", "hello" in complete_in(c, "overlay.nix", "prev.hello", "prev.hel", "hel;", 3), True)
     check("home-manager's options", complete_in(c, "dots/main.nix", "homeOnly = true;", "homeO", "O\n", 1), ["homeOnly"])
     check("said in hover", evaluated_with(c, "dots/main.nix", "homeOnly", 2), "`homeConfigurations.me` (its `pkgs`)")
