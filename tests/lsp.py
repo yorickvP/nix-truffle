@@ -479,6 +479,20 @@ let cfg = config.services.nginx; in {
     check("an overlay's prev", "hello" in complete_in(c, "overlay.nix", "prev.hello", "prev.hel", "hel;", 3), True)
     check("home-manager's options", complete_in(c, "dots/main.nix", "homeOnly = true;", "homeO", "O\n", 1), ["homeOnly"])
     check("said in hover", evaluated_with(c, "dots/main.nix", "homeOnly", 2), "`homeConfigurations.me` (its `pkgs`)")
+    # A module saved with a misspelled option: diagnosed (with the evaluation there, which the
+    # flake as saved, defining what isn't declared, mightn't give).
+    thing = fl / "shared" / "thing.nix"
+    good = thing.read_text()
+    thing.write_text(good.replace("beta.only", "beta.onyl"))
+    c.open(thing.as_uri(), thing.read_text())
+    c.notify("textDocument/didSave", {"textDocument": {"uri": thing.as_uri()}})
+    deadline = time.time() + 60
+    while time.time() < deadline and not any("no option" in d["message"] for d in c.diagnostics.get(thing.as_uri(), [])):
+        c.request("textDocument/hover", {"textDocument": {"uri": thing.as_uri()}, "position": {"line": 0, "character": 0}})
+        time.sleep(0.2)
+    check("diagnosed when saved", [d["message"] for d in c.diagnostics.get(thing.as_uri(), []) if d["severity"] == 1], ["no option `beta.onyl`; did you mean `only`?"])
+    thing.write_text(good)
+    c.open(thing.as_uri(), good)
     # A module saved with another option: evaluated again.
     (fl / "beta.nix").write_text(declares % ("beta.other", "Beta's other one."))
     c.notify("textDocument/didSave", {"textDocument": {"uri": (fl / "beta.nix").as_uri()}})

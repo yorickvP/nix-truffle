@@ -396,11 +396,12 @@ public final class LspServer {
                 yield null;
             }
             case "textDocument/didSave" -> {
-                // The flake, or a module's options or imports, may have changed: evaluate them again.
+                // The flake, or the options a module declares, may have changed: evaluate them again.
+                // (Not for every module: a configuration that doesn't evaluate as saved, with a
+                // misspelled option say, would leave nothing to compare it with.)
                 String uri = Bytes.toJava(Json.str(Json.obj(params.get("textDocument")).get("uri")));
                 Doc doc = docs.get(uri);
-                if (uri.endsWith("/flake.nix") || uri.endsWith("/flake.lock")
-                        || doc != null && (doc.text.contains("mkOption") || doc.text.contains("imports"))) {
+                if (uri.endsWith("/flake.nix") || uri.endsWith("/flake.lock") || doc != null && doc.text.contains("mkOption")) {
                     worker.execute(this::reload);
                 }
                 diagnoseLater(uri);
@@ -1154,6 +1155,14 @@ public final class LspServer {
                 log("diagnosing: " + e.getMessage());
                 return;
             }
+            // The module's own value (its function applied), once: each definition's value is in it.
+            Value module = null;
+            try {
+                if (doc.root instanceof Expr.Lambda l) module = evaluateFromOrThrow(doc, 0, 0, l.body().pos());
+            } catch (org.graalvm.polyglot.PolyglotException e) {
+                if (e.isInterrupted() || e.isCancelled()) throw e;
+                log("diagnosing, the module: " + evaluationMessage(e.getMessage()));
+            }
             Set<List<String>> missing = new HashSet<>();
             for (int i = 0; i < defs.size(); i++) {
                 ModuleDefinitions.Definition d = defs.get(i);
@@ -1168,8 +1177,8 @@ public final class LspServer {
                     for (long j = 0; j < sv.getArraySize(); j++) siblings.add(sv.getArrayElement(j).asString());
                     String meant = closest(prefix.getLast(), siblings);
                     found.add(new EvalDiagnostic(d.path(), "no option `" + optionName(prefix) + "`" + (meant == null ? "" : "; did you mean `" + meant + "`?")));
-                } else if (kind.equals("option")) {
-                    String problem = check(doc, d);
+                } else if (kind.equals("option") && module != null) {
+                    String problem = check(doc, module, d);
                     if (problem != null) found.add(new EvalDiagnostic(d.path(), problem));
                 }
             }
@@ -1185,12 +1194,15 @@ public final class LspServer {
     }
 
     /** Why a definition's value doesn't do for its option, or null. */
-    private String check(Doc doc, ModuleDefinitions.Definition d) {
+    private String check(Doc doc, Value module, ModuleDefinitions.Definition d) {
         try {
             List<String> parent = d.path().subList(0, d.path().size() - 1);
             Value opts = optionsAt(doc, parent);
             if (opts == null || !opts.hasMember(d.path().getLast())) return null;
-            Value value = evaluateFromOrThrow(doc, 0, 0, d.valuePos());
+            String pathJSON = Bytes.toJava(Json.write(d.path().stream().map(x -> (Object) Bytes.fromJava(x)).toList()));
+            Value at = definitionIn().execute(module, pathJSON);
+            if (!at.getMember("found").asBoolean()) return null;
+            Value value = at.getMember("value");
             Value lib = resolver(doc).execute(context.eval("nix", "{ arg = \"lib\"; }"));
             checker().execute(lib, opts.getMember(d.path().getLast()), Bytes.toJava(Json.write(d.path().stream().map(x -> (Object) Bytes.fromJava(x)).toList())),
                     Path.of(URI.create(doc.uri)).toString(), value);
@@ -1232,19 +1244,21 @@ public final class LspServer {
         return best;
     }
 
+    /** Edit distance, a swap of two letters one edit (optimal string alignment). */
     private static int editDistance(String a, String b) {
-        int[] prev = new int[b.length() + 1], cur = new int[b.length() + 1];
-        for (int j = 0; j <= b.length(); j++) prev[j] = j;
+        int[][] d = new int[a.length() + 1][b.length() + 1];
+        for (int i = 0; i <= a.length(); i++) d[i][0] = i;
+        for (int j = 0; j <= b.length(); j++) d[0][j] = j;
         for (int i = 1; i <= a.length(); i++) {
-            cur[0] = i;
             for (int j = 1; j <= b.length(); j++) {
-                cur[j] = Math.min(Math.min(cur[j - 1], prev[j]) + 1, prev[j - 1] + (a.charAt(i - 1) == b.charAt(j - 1) ? 0 : 1));
+                int cost = a.charAt(i - 1) == b.charAt(j - 1) ? 0 : 1;
+                d[i][j] = Math.min(Math.min(d[i - 1][j], d[i][j - 1]) + 1, d[i - 1][j - 1] + cost);
+                if (i > 1 && j > 1 && a.charAt(i - 1) == b.charAt(j - 2) && a.charAt(i - 2) == b.charAt(j - 1)) {
+                    d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+                }
             }
-            int[] t = prev;
-            prev = cur;
-            cur = t;
         }
-        return prev[b.length()];
+        return d[a.length()][b.length()];
     }
 
     private Value classify;
@@ -1286,6 +1300,34 @@ public final class LspServer {
     }
 
     private Value checker;
+    private Value definitionIn;
+
+    /**
+     * {@code module: pathJSON: { found; value; }}: a definition's value in a module's value,
+     * through mkIf, mkMerge and overrides (their conditions aside), and its `config` if it has one.
+     */
+    private Value definitionIn() {
+        if (definitionIn == null) {
+            definitionIn = context.eval("nix", """
+                    module: pathJSON:
+                    let
+                      path = builtins.fromJSON pathJSON;
+                      strip = v: if builtins.isAttrs v && builtins.elem (v._type or null) [ "if" "override" "order" ] then strip v.content else v;
+                      get = v: p:
+                        let s = strip v; in
+                        if p == [ ] then { found = true; value = v; }
+                        else if builtins.isAttrs s && (s._type or null) == "merge" then
+                          let hits = builtins.filter (r: r.found) (map (c: get c p) s.contents); in
+                          if hits == [ ] then { found = false; } else builtins.head hits
+                        else if builtins.isAttrs s && s ? ${builtins.head p} then get s.${builtins.head p} (builtins.tail p)
+                        else { found = false; };
+                      direct = get module path;
+                      top = strip module;
+                    in if direct.found then direct else if builtins.isAttrs top && top ? config then get top.config path else direct
+                    """);
+        }
+        return definitionIn;
+    }
 
     /** {@code lib: option: locJSON: file: value: true}, or the module system's error for the definition. */
     private Value checker() {
@@ -1952,6 +1994,7 @@ public final class LspServer {
         noArguments = null;
         classify = null;
         checker = null;
+        definitionIn = null;
         Context old = context;
         context = contexts.get();
         old.close(true);
