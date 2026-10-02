@@ -1616,7 +1616,9 @@ public final class LspServer {
         if (opts == null || !opts.hasMember(name)) return null;
         try {
             Value d = describe().execute(opts, name);
-            String md = "`" + String.join(".", path) + (path.isEmpty() ? "" : ".") + name + "`: " + d.getMember("kind").asString()
+            List<String> full = new ArrayList<>(path);
+            full.add(name);
+            String md = "`" + optionName(full) + "`: " + d.getMember("kind").asString()
                     + (d.getMember("detail").isNull() ? "" : " `" + d.getMember("detail").asString() + "`");
             String docs = documentation(d);
             if (!docs.isEmpty()) md += "\n\n" + docs;
@@ -2085,7 +2087,9 @@ public final class LspServer {
                             (builtins.concatStringsSep " · " links)
                           ])
                         else "");
-                      default = if option then safe (if v ? defaultText then text v.defaultText else builtins.toJSON v.default) else null;
+                      # (an option may have no default: not a throw that tryEval catches)
+                      default = if option && (v ? defaultText || v ? default)
+                        then safe (if v ? defaultText then text v.defaultText else builtins.toJSON v.default) else null;
                       # a function's own position, where its doc comment is (lib's are inherited
                       # into lib from where they're defined)
                       inherit name;

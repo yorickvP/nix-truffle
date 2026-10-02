@@ -396,6 +396,10 @@ let cfg = config.services.nginx; in {
     c.open(module, mtext)
     hover = c.at("textDocument/hover", module, mtext, "enable = true", 2)["contents"]["value"]
     check("hover on an option", hover.startswith("`services.openssh.enable`: option `boolean`\n\nWhether to enable the OpenSSH"), True)
+    nodefault = mtext.replace("services.openssh.enable = true;", 'fileSystems."/".fsType = "zfs";')
+    c.open(module, nodefault)
+    check("hover on an option without a default", c.at("textDocument/hover", module, nodefault, "fsType", 2)["contents"]["value"].startswith('`fileSystems."/".fsType`: option'), True)
+    c.open(module, mtext)
     check("hover on lib, with its doc comment", "Return a singleton list or an empty list" in c.at("textDocument/hover", module, mtext, "optional true", 2)["contents"]["value"], True)
     items = c.at("textDocument/completion", module, mtext.replace("pkgs.hello ]", "pkgs.hello ]"), "ello ]", 4)
     hello = [i for i in (items["items"] if isinstance(items, dict) else items) if i["label"] == "hello"][0]
