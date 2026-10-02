@@ -1,5 +1,7 @@
 // A NixOS system in Pkl: the same one as host.nix (see default.nix).
 amends "nixos.pkl"
+import "nix:pkgs" as pkgs
+import "nix:config" as config
 
 networking {
   hostName = "pkl-demo"
@@ -15,7 +17,14 @@ users {
     }
   }
 }
-environment { systemPackages { "htop"; "git"; "python3Packages.requests" } }
+environment {
+  // Packages: from pkgs, or as attribute paths in it.
+  systemPackages { pkgs.htop; pkgs.git; "python3Packages.requests" }
+  // Set to empty, unlike unset: none of NixOS's default packages (nano, perl, rsync, strace).
+  defaultPackages {}
+  // The configuration's values, as NixOS has them (its defaults, other modules' definitions).
+  etc { ["motd"] { text = "Welcome to \(config.networking.hostName), NixOS \(config.system.nixos.release)" } }
+}
 services {
   openssh {
     enable = true
@@ -26,6 +35,8 @@ services {
     virtualHosts { ["example.org"] { root = "/var/www" } }
   }
 }
+// nginx's unit sets ProtectSystem = "strict": a definition of the same priority would conflict.
+systemd { services { ["nginx"] { serviceConfig { ["ProtectSystem"] = module.mkForce("full") } } } }
 fileSystems { ["/"] { device = "/dev/sda1"; fsType = "ext4" } }
 boot { loader { grub { device = "/dev/sda" } } }
 system { stateVersion = "25.11" }

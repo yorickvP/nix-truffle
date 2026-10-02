@@ -219,7 +219,18 @@ its Java API) on the JVM. Three directions work (see `examples/pkl`, `tests/pkl.
   right derivations.
 
 `builtins.pkl` takes `module` (a path) or `text`, and optionally `amend` (with `module`),
-`expression` (evaluated in the module instead of the whole module), `output`, and `nix`. Values:
+`expression` (evaluated in the module instead of the whole module), `output`, `defaults`, and
+`nix`.
+
+With `defaults = false`, the value has only what the module's files set, not what its schema (the
+module at the root of its amends chain) defines: a property set to null or to an empty listing is
+there, one that isn't set isn't, and a listing has the elements the files added. It is lazy: its
+attribute names are the properties' (Pkl knows them without evaluating anything), and each value
+is evaluated (and type-checked) by Pkl when Nix uses it. So Pkl can read, through `nix:`, Nix
+values that depend on the result, as long as a value doesn't depend on itself (that's "infinite
+recursion"). This reads pkl-core's runtime objects, beyond its Java API.
+
+Values:
 
 | Pkl | Nix | | Nix | Pkl (as the property's type has it) |
 |---|---|---|---|---|
@@ -281,37 +292,55 @@ schema, and makes a NixOS module of a Pkl file that amends it (`examples/pkl/nix
 
 ```pkl
 amends "nixos.pkl"
+import "nix:pkgs" as pkgs
+import "nix:config" as config
 
 networking { hostName = "pkl-demo"; firewall { allowedTCPPorts { 22; 80; 443 } } }
 users { users { ["alice"] { isNormalUser = true; extraGroups { "wheel" } } } }
-environment { systemPackages { "htop"; "git"; "python3Packages.requests" } }
+environment {
+  systemPackages { pkgs.htop; pkgs.git; "python3Packages.requests" }
+  defaultPackages {}
+  etc { ["motd"] { text = "Welcome to \(config.networking.hostName), NixOS \(config.system.nixos.release)" } }
+}
 services { openssh { enable = true; settings { PermitRootLogin = "no" } } }
+systemd { services { ["nginx"] { serviceConfig { ["ProtectSystem"] = module.mkForce("full") } } } }
 ```
 
 ```nix
 nixosSystem { modules = [ (nix-truffle.lib.nixosPkl.module ./host.pkl) ]; }
 ```
 
-- `schema options` (plain Nix: any Nix runs it, Lix and nix-truffle give the same 3 MB for
+- `schema options` (plain Nix: any Nix runs it, Lix and nix-truffle give the same 4 MB for
   NixOS's 17k options) makes a property of every option, with its description as doc comment, and
   a class of every set of options and submodule. Types follow the options':
   - `bool`, `str`, `int` and ints with bounds (ports: `Int(isBetween(0, 65535))`), `float`;
   - string enums as unions of literals, other enums as a constraint;
   - `listOf` as `Listing`, `attrsOf` as `Mapping`, `nullOr`, `either` and `coercedTo` as unions;
-  - packages as attribute paths in pkgs (`"python3Packages.requests"`);
+  - packages as values of `import "nix:pkgs"` or attribute paths in pkgs
+    (`"python3Packages.requests"`);
   - freeform submodules (`settings`) and whole configurations (`virtualisation.vmVariant`) as
     `Dynamic`, anything else as `Any`; function-typed options aren't in it.
-- An option that isn't set is null (or an empty listing, mapping or object), and `module` makes
-  definitions of the others, so the system is the one the same definitions in Nix make: the
-  example's `toplevel.drvPath` is the same as `host.nix`'s.
+- The options the file sets are definitions (`builtins.pkl`'s `defaults = false`), also when set
+  to null or to an empty listing (`defaultPackages {}`: none of NixOS's); unset ones aren't. So
+  the system is the one the same definitions in Nix make: the example's `toplevel.drvPath` is the
+  same as `host.nix`'s.
+- An option's value (or an `attrsOf` value) can be an override: `module.mkForce(x)`,
+  `mkDefault`, `mkOverride(priority, x)`, `mkBefore`, `mkAfter`, `mkOrder`, which make the data
+  that Nix's `lib.mkOverride` and `lib.mkOrder` do. Pkl checks their content's type too
+  (unless the type has classes of the schema: those, NixOS checks).
+- `import "nix:pkgs"` and `import "nix:config"` are the configuration's: `config` has its final
+  values (NixOS's defaults, other modules' definitions). Use them in values, not to decide what is
+  set (`when (config.x) { ... }` makes the definitions depend on the configuration, which is made
+  from them).
 - Pkl checks the configuration before Nix sees it: a misspelled option (`enabel`, "did you mean
   `enable`"), a string for a port, `splashMode = "zoom"` (`"normal"|"stretch"`), port 70000. With
   the schema, Pkl's editor plugins complete and document the options, and `pkl eval host.pkl`
-  checks a configuration without Nix.
-- Generate the schema from your configuration without its Pkl module: some option types depend
-  on the configuration, and evaluating them evaluates the Pkl file, which needs the schema.
-- Not expressible this way: unsetting a default to an empty list or to null (unset means "no
-  definition"), `mkForce` and other priorities, and Nix values in the configuration (it's data).
+  checks a configuration without Nix (as long as it doesn't import `nix:`).
+- For a configuration that has Pkl modules, `schemaOf nixosConfiguration` makes the schema
+  without them (their module reads `specialArgs.pklSchema`): some option types depend on the
+  configuration, and the Pkl files need the schema to be read.
+- Pkl has no counterpart of the module system's functions (`mkIf` on the configuration,
+  `mkMerge`, options' `apply`); values are data.
 
 ## Strings are bytes
 

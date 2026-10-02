@@ -32,6 +32,35 @@ asText = read("nix:d.s")
 json = read("nix:d.b")
 path = read("nix:file")
 EOF
+cat > schema.pkl <<'EOF'
+class Service { enable: Boolean?; port: Int(isBetween(0, 65535))?; tags: Listing<String>; env: Mapping<String, String> }
+services: Mapping<String, Service>
+main: Service
+name: String|Dynamic = "default"
+count: Int?
+extra: Listing<String> = new { "from-schema" }
+function force(c) = new Dynamic { priority = 50; content = c }
+EOF
+cat > common.pkl <<'EOF'
+amends "schema.pkl"
+extra { "from-common" }
+main { tags { "a" } }
+EOF
+cat > layered.pkl <<'EOF'
+amends "common.pkl"
+services { ["web"] { enable = true; port = 80; tags {} } }
+main { enable = null; tags { "b" }; env { ["X"] = "1" } }
+count = null
+local helper = 1 + 1
+extra { "from-host-\(helper)" }
+name = module.force("x")
+EOF
+cat > lazy.pkl <<'EOF'
+amends "schema.pkl"
+import "nix:self" as self
+count = self.main.port + 1
+main { port = 8080; enable = throw("not used") }
+EOF
 
 passed=0 failed=0
 # check NAME EXPECTED EXPR [OPTION...]: the first line of the output.
@@ -65,6 +94,10 @@ check "nix: modules and reads" "{ asText = \"x\"; json = \"[1,2]\"; nested = tru
 check "store paths keep their context" "[ \"$(NIX_TRUFFLE_DAEMON=0 "$truffle" -E 'builtins.toFile "f" "y"' | tr -d '"')\" ]" 'builtins.attrNames (builtins.getContext (builtins.pkl { module = ./reads.pkl; nix = { d = { a = 1; b = [ ]; s = ""; n.deep = 1; }; file = builtins.toFile "f" "y"; }; }).path)' --strict
 check "derivations come back as themselves" '[ true true "x" ]' \
   'let p = derivation { name = "x"; builder = "/bin/sh"; system = "x86_64-linux"; }; r = builtins.pkl { text = "import \"nix:d\" as d\nx = d.p\nxs { d.p; d.p.`out` }\nn = d.p.name"; nix.d.p = p; }; in [ (r.x == p) (builtins.elemAt r.xs 1 == p.out) r.n ]'
+check "defaults = false: what the files set" '{ count = null; extra = [ "from-common" "from-host-2" ]; main = { enable = null; env = { X = "1"; }; tags = [ "a" "b" ]; }; name = { content = "x"; priority = 50; }; services = { web = { enable = true; port = 80; tags = [ ]; }; }; }' \
+  'builtins.pkl { module = ./layered.pkl; defaults = false; }' --strict
+check "defaults = false: lazily" '8081' 'let r = builtins.pkl { module = ./lazy.pkl; defaults = false; nix.self = r; }; in r.count'
+check "defaults = false: Pkl's errors when used" 'error: Pkl: not used' 'let r = builtins.pkl { module = ./lazy.pkl; defaults = false; nix.self = r; }; in r.main.enable'
 check "a missing nix: attribute" "error: Pkl: I/O error loading module \`nix:d.missing\`." 'builtins.pkl { text = "import \"nix:d.missing\" as m\nx = m.value"; nix.d = { }; }'
 check "pure evaluation" "error: Pkl: access to absolute path '/etc/hostname' is forbidden in pure evaluation mode (use '--impure' to override)" \
   'builtins.pkl { text = "x = read(\"file:///etc/hostname\")"; }' --option pure-eval true
@@ -84,6 +117,8 @@ if [[ -n "${NIXPKGS:-}" ]]; then
   fi
   # examples/pkl/package: a package in Pkl, and one amending it, are the same as in Nix.
   check "packages in Pkl" 'true' "let pkgs = import <nixpkgs> { }; p = import $root/examples/pkl/package { inherit pkgs; }; in p.hello-quiet.drvPath == (pkgs.stdenv.mkDerivation { pname = \"hello-quiet\"; inherit (pkgs.hello) version src; nativeBuildInputs = [ pkgs.perl ]; doCheck = false; configureFlags = [ \"--disable-nls\" ]; meta = { description = \"A program that produces a familiar, friendly greeting\"; homepage = \"https://www.gnu.org/software/hello/manual/\"; license = pkgs.lib.licenses.gpl3Plus; mainProgram = \"hello\"; }; }).drvPath" -I "nixpkgs=$NIXPKGS"
+  # The schema of a configuration with a Pkl module, before there is one.
+  check "NixOS schema without its Pkl module" 'true' "let pkl = import $root/nixos/pkl.nix { lib = import <nixpkgs/lib>; }; nixos = import <nixpkgs/nixos/lib/eval-config.nix> { system = \"x86_64-linux\"; modules = [ (pkl.module ./missing-schema.pkl) { system.stateVersion = \"25.11\"; } ]; }; in builtins.stringLength (pkl.schemaOf nixos) > 1000000" -I "nixpkgs=$NIXPKGS"
   printf 'amends "%s"\nservices { openssh { enabel = true } }\n' "$example/nixos.pkl" > typo.pkl
   check "NixOS option typo" 'error: Pkl: Cannot find property `enabel` in object of type `nixos#O_services_openssh`.' 'builtins.pkl { module = ./typo.pkl; }'
 fi

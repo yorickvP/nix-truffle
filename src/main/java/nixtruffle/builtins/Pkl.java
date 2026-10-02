@@ -172,8 +172,10 @@ final class Pkl {
 
     /**
      * {@code builtins.pkl { module | text, amend ? { }, expression ? null, output ? false,
-     * nix ? { } }}: the module's value (or the expression's), or with {@code output} its rendered
-     * output (its {@code output} block's renderer: JSON, YAML, plist, ...) as a string.
+     * defaults ? true, nix ? { } }}: the module's value (or the expression's), or with
+     * {@code output} its rendered output (its {@code output} block's renderer: JSON, YAML, plist,
+     * ...) as a string. With {@code defaults = false}, only what the module's files set, lazily
+     * ({@link Lazy}).
      */
     @TruffleBoundary
     static Object eval(NixAttrs args) {
@@ -185,15 +187,15 @@ final class Pkl {
         Object amend = args.get("amend");
         Object expression = args.get("expression");
         Object output = args.get("output");
-        try (Evaluator e = call.evaluator()) {
-            ModuleSource source;
-            if (module != null) {
-                String path = Bytes.toJava(Values.coerce(module, false, false, new TreeSet<>(), null));
-                NixContext.get(null).checkAccess(Bytes.fromJava(path));
-                source = ModuleSource.path(Path.of(path));
-            } else {
-                source = ModuleSource.text(Bytes.toJava(Values.coerce(text, false, false, new TreeSet<>(), null)));
+        Object defaults = args.get("defaults");
+        if (defaults != null && !Values.bool(defaults)) {
+            if (amend != null || expression != null || output != null) {
+                throw NixException.error("builtins.pkl: 'defaults = false' doesn't go with 'amend', 'expression' or 'output'", null);
             }
+            return Lazy.module(call, source(module, text));
+        }
+        try (Evaluator e = call.evaluator()) {
+            ModuleSource source = source(module, text);
             if (amend != null) {
                 if (module == null) throw NixException.error("builtins.pkl: 'amend' needs a 'module'", null);
                 source = ModuleSource.text(amending(e, source, Values.attrs(amend), call));
@@ -204,6 +206,13 @@ final class Pkl {
         } catch (PklException e) {
             throw error(e);
         }
+    }
+
+    private static ModuleSource source(Object module, Object text) {
+        if (module == null) return ModuleSource.text(Bytes.toJava(Values.coerce(text, false, false, new TreeSet<>(), null)));
+        String path = Bytes.toJava(Values.coerce(module, false, false, new TreeSet<>(), null));
+        NixContext.get(null).checkAccess(Bytes.fromJava(path));
+        return ModuleSource.path(Path.of(path));
     }
 
     private static final Pattern FRAME = Pattern.compile("^at (.*) \\((.*)\\)$");
@@ -315,6 +324,157 @@ final class Pkl {
         });
         String bytes = Bytes.fromJava(s);
         return context.isEmpty() ? bytes : NixString.make(bytes, context);
+    }
+
+    // ------------------------------------------------------------ Pkl -> Nix, lazily
+
+    /**
+     * {@code builtins.pkl { ...; defaults = false; }}: a module as the members its files set, not
+     * those its schema (the module at the root of its amends chain, or pkl:base) defines (an
+     * object's own members are set, though, also when a function of the schema made it), like
+     * definitions of NixOS options: a property set to null or to an empty listing is there, one
+     * that isn't set isn't. Objects are attribute sets (lists for listings), whose names are known
+     * without evaluating anything; each value is a thunk that Pkl evaluates (and checks) when Nix
+     * uses it, so Pkl can use Nix values that depend on the result's names (a NixOS
+     * configuration's {@code pkgs}, through {@code nix:}).
+     *
+     * <p>This reads Pkl's objects (pkl-core's runtime classes), and evaluates in the evaluator's
+     * context through its private {@code doEvaluate}, which the Java API doesn't offer. The
+     * evaluator stays open until the values are unreachable.
+     */
+    private static final class Lazy {
+        private static final java.lang.ref.Cleaner CLEANER = java.lang.ref.Cleaner.create();
+        private static java.lang.reflect.Method doEvaluate, doEvaluateModule;
+
+        /** Reads a member: the builtin of the thunks. Named "pkl" for {@link nixtruffle.runtime.Builtin#mainOnly}. */
+        private static final nixtruffle.runtime.Builtin READ = new nixtruffle.runtime.Builtin("pkl", 1, a -> ((Member) a[0]).read());
+
+        private record Member(Lazy lazy, org.pkl.core.runtime.VmObjectLike owner, Object key) {
+            Object read() {
+                return lazy.value(lazy.evaluate(() -> org.pkl.core.runtime.VmUtils.readMember(owner, key)));
+            }
+        }
+
+        final Call call;
+        final Evaluator evaluator;
+        /** The schema's source: its members are defaults. */
+        final com.oracle.truffle.api.source.Source schema;
+
+        private Lazy(Call call, Evaluator evaluator, com.oracle.truffle.api.source.Source schema) {
+            this.call = call;
+            this.evaluator = evaluator;
+            this.schema = schema;
+        }
+
+        static Object module(Call call, ModuleSource source) {
+            Evaluator e = call.evaluator();
+            try {
+                org.pkl.core.runtime.VmTyped module = invoke(e, doEvaluateModule(), source, (java.util.function.Function<org.pkl.core.runtime.VmTyped, Object>) m -> m);
+                org.pkl.core.runtime.VmTyped root = module;
+                while (root.getModuleInfo().isAmend() && root.getParent() != null) root = root.getParent();
+                Lazy lazy = new Lazy(call, e, root.getModuleInfo().getSourceSection().getSource());
+                CLEANER.register(lazy, e::close);
+                return lazy.object(module);
+            } catch (RuntimeException | Error x) {
+                e.close();
+                throw x;
+            }
+        }
+
+        <T> T evaluate(java.util.function.Supplier<T> body) {
+            return invoke(evaluator, doEvaluate(), body);
+        }
+
+        @SuppressWarnings("unchecked")
+        private static <T> T invoke(Evaluator e, java.lang.reflect.Method m, Object... args) {
+            try {
+                return (T) m.invoke(e, args);
+            } catch (java.lang.reflect.InvocationTargetException x) {
+                Throwable c = x.getCause();
+                if (c instanceof PklException p) throw error(p);
+                if (c instanceof RuntimeException r) throw r;
+                if (c instanceof Error r) throw r;
+                throw new IllegalStateException(c);
+            } catch (IllegalAccessException x) {
+                throw new IllegalStateException(x);
+            }
+        }
+
+        private static java.lang.reflect.Method doEvaluate() {
+            if (doEvaluate == null) doEvaluate = method(java.util.function.Supplier.class);
+            return doEvaluate;
+        }
+
+        private static java.lang.reflect.Method doEvaluateModule() {
+            if (doEvaluateModule == null) doEvaluateModule = method(ModuleSource.class, java.util.function.Function.class);
+            return doEvaluateModule;
+        }
+
+        private static java.lang.reflect.Method method(Class<?>... parameters) {
+            try {
+                java.lang.reflect.Method m = Class.forName("org.pkl.core.EvaluatorImpl").getDeclaredMethod("doEvaluate", parameters);
+                m.setAccessible(true);
+                return m;
+            } catch (ReflectiveOperationException | RuntimeException x) {
+                throw NixException.error("builtins.pkl: 'defaults = false' needs pkl-core's EvaluatorImpl.doEvaluate, which this pkl-core lacks (" + x + ")", null);
+            }
+        }
+
+        /** A member's value: an object lazily, a nix: module as its Nix value, anything else exported. */
+        Object value(Object v) {
+            if (v instanceof org.pkl.core.runtime.VmTyped t && t.isModuleObject()) {
+                URI uri = t.getModuleInfo().getModuleKey().getUri();
+                if ("nix".equals(uri.getScheme())) return lookUp(call, path(uri));
+            }
+            if (v instanceof org.pkl.core.runtime.VmObject o) return object(o);
+            return toNix(evaluate(() -> {
+                org.pkl.core.runtime.VmValue.force(v, false);
+                return org.pkl.core.runtime.VmValue.export(v);
+            }), call);
+        }
+
+        /** An object as the members that are set: a list for a listing, or a Dynamic of elements only. */
+        Object object(org.pkl.core.runtime.VmObject o) {
+            Map<Object, org.pkl.core.ast.member.ObjectMember> members = new java.util.LinkedHashMap<>();
+            Set<Object> seen = new java.util.HashSet<>();
+            // An object's own members are set, whoever wrote them (a function of the schema, like
+            // mkForce, too); a module's, and those it gets from its parents, unless the schema did.
+            boolean own = !o.isModuleObject();
+            for (org.pkl.core.runtime.VmObjectLike a = o; a != null; a = a.getParent()) {
+                var cursor = a.getMembers().getEntries();
+                while (cursor.advance()) {
+                    if (seen.add(cursor.getKey()) && set(cursor.getKey(), cursor.getValue(), own && a == o)) members.put(cursor.getKey(), cursor.getValue());
+                }
+            }
+            boolean elements = !members.isEmpty() && members.values().stream().allMatch(org.pkl.core.ast.member.ObjectMember::isElement);
+            if (o instanceof org.pkl.core.runtime.VmListing || o instanceof org.pkl.core.runtime.VmDynamic && elements) {
+                List<Object> keys = new ArrayList<>(members.keySet());
+                keys.sort((x, y) -> Long.compare((Long) x, (Long) y));
+                Object[] items = new Object[keys.size()];
+                for (int i = 0; i < items.length; i++) items[i] = nixtruffle.runtime.Apply.lazy(READ, new Member(this, o, keys.get(i)));
+                return new NixList(items);
+            }
+            TreeMap<String, Object> out = new TreeMap<>();
+            members.forEach((key, m) -> {
+                String name;
+                if (key instanceof String str) name = str;
+                else if (m.isProp() || m.isElement()) name = key.toString();
+                else throw NixException.error("Pkl: an entry with a key that isn't a string (" + key + ") can't be an attribute", null);
+                out.put(Bytes.fromJava(name), nixtruffle.runtime.Apply.lazy(READ, new Member(this, o, key)));
+            });
+            return NixAttrs.fromMap(out);
+        }
+
+        /** Whether a member is set: not local or hidden, and (unless {@code own}) not defined by the schema or pkl:base. */
+        private boolean set(Object key, org.pkl.core.ast.member.ObjectMember m, boolean own) {
+            if (m.isLocalOrExternalOrHidden() || org.pkl.core.runtime.VmListing.isDefaultProperty(key)) return false;
+            if (own) return true;
+            var section = m.getSourceSection();
+            if (section == null || !section.isAvailable()) return false;
+            var source = section.getSource();
+            URI uri = source.getURI();
+            return source != schema && !(uri != null && "pkl".equals(uri.getScheme()));
+        }
     }
 
     // ------------------------------------------------------------ Nix -> Pkl source
