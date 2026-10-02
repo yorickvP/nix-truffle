@@ -320,11 +320,13 @@ systemd { services { ["nginx"] { serviceConfig { ["ProtectSystem"] = module.mkFo
 nixosSystem { modules = [ (nix-truffle.lib.nixosPkl.module ./host.pkl) ]; }
 ```
 
-- `schema options` (plain Nix: any Nix runs it, Lix and nix-truffle give the same 4 MB for
-  NixOS's 17k options) makes a property of every option, with its description as doc comment, and
-  a class of every set of options and submodule. Types follow the options':
+- `schema options` (plain Nix: any Nix runs it, Lix and nix-truffle give the same 3.7 MB for
+  NixOS's 17k options, half of it doc comments) makes a property of every option, with its
+  description as doc comment, and a class of every set of options and submodule; identical ones
+  (systemd's units have many) are one class, named after the shortest of their paths. Types
+  follow the options':
   - `bool`, `str`, `int` and ints with bounds (ports: `Int(isBetween(0, 65535))`), `float`;
-  - string enums as unions of literals, other enums as a constraint;
+  - string enums as unions of literals (long ones as a type alias), other enums as a constraint;
   - `listOf` as `Listing`, `attrsOf` as `Mapping`, `nullOr`, `either` and `coercedTo` as unions;
   - packages as values of `import "nix:pkgs"`, calls of Nix functions
     (`pkgs.writeShellScriptBin.call("greet").call("...")`), or attribute paths in pkgs

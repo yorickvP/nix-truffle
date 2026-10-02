@@ -22,12 +22,12 @@ let
 
   # Class names follow option paths ("services.openssh" -> O_services_openssh), with a hash where
   # characters had to be replaced, to keep them distinct.
-  className = path:
+  className = prefix: path:
     let
       joined = concatStringsSep "." path;
       safe = concatStrings (map (c: if builtins.match "[A-Za-z0-9]" c != null then c else "_") (lib.stringToCharacters joined));
     in
-    "O_" + safe + lib.optionalString (safe != builtins.replaceStrings [ "." ] [ "_" ] joined) ("_" + builtins.substring 0 6 (builtins.hashString "sha256" joined));
+    prefix + safe + lib.optionalString (safe != builtins.replaceStrings [ "." ] [ "_" ] joined) ("_" + builtins.substring 0 6 (builtins.hashString "sha256" joined));
 
   # The first paragraph of an option's description, as doc comment lines.
   doc = opt:
@@ -54,9 +54,10 @@ let
   # kind: how a property of the type is declared (see `option`); default: an object's empty value,
   # with defaults for the elements of a listing or a mapping, where those are objects (an
   # Override or an object is a union, which Pkl has no default for).
-  simple = type: { inherit type; kind = if type == "Any" then "any" else if type == "Dynamic" then "object" else "scalar"; classes = [ ]; default = "new Dynamic {}"; };
-  collection = type: e: {
-    inherit type;
+  # plain: the type without Overrides in it, which an Override's content is checked against.
+  simple = type: { inherit type; plain = type; kind = if type == "Any" then "any" else if type == "Dynamic" then "object" else "scalar"; classes = [ ]; default = "new Dynamic {}"; };
+  collection = type: plain: e: {
+    inherit type plain;
     kind = "object";
     inherit (e) classes;
     default = "new ${type} {${lib.optionalString (e.kind == "object") " default = (_) -> ${e.default} "}}";
@@ -65,7 +66,12 @@ let
     let ok = filter (t: t != null) ts;
     in if ok == [ ] then null
     else if builtins.length ok == 1 then builtins.head ok
-    else { type = concatStringsSep "|" (map (t: t.type) ok); kind = "scalar"; classes = concatMap (t: t.classes) ok; };
+    else { type = concatStringsSep "|" (map (t: t.type) ok); plain = concatStringsSep "|" (map (t: t.plain) ok); kind = "scalar"; classes = concatMap (t: t.classes) ok; };
+  # A long type (an enum of Home Assistant's components) as a type alias, which is there once
+  # (named like a class: see `schema`).
+  alias = path: type:
+    let hash = builtins.substring 0 16 (builtins.hashString "sha256" type); token = "@@class:${hash}@@";
+    in simple token // { classes = [ { inherit hash; name = className "E_" path; text = "typealias ${token} = ${type}\n"; class = false; } ]; };
   pklType = path: depth: t:
     let
       name = t.name or "";
@@ -92,14 +98,16 @@ let
     else if name == "package" || name == "shellPackage" then simple "Package"
     else if name == "enum" then
       let values = t.functor.payload.values or t.functor.payload or [ ];
-      in if values == [ ] then null else simple (enumType values)
+      in if values == [ ] then null
+      else if builtins.stringLength (enumType values) <= 200 then simple (enumType values)
+      else alias path (enumType values)
     else if builtins.elem name [ "nullOr" "uniq" "unique" ] then element path
     else if name == "listOf" then
       let e = element (path ++ [ "*" ]);
-      in if e == null then null else collection "Listing<${e.type}>" e
+      in if e == null then null else collection "Listing<${e.type}>" "Listing<${e.plain}>" e
     else if name == "attrsOf" || name == "lazyAttrsOf" then
       let e = element (path ++ [ "<name>" ]);
-      in if e == null then null else collection "Mapping<String, ${overridable e}>" e
+      in if e == null then null else collection "Mapping<String, ${overridable e}>" "Mapping<String, ${e.plain}>" e
     else if name == "either" then union [ (pklType (path ++ [ "left" ]) deeper nested.left) (pklType (path ++ [ "right" ]) deeper nested.right) ]
     else if name == "coercedTo" then union [ (pklType (path ++ [ "from" ]) deeper nested.coercedType) (pklType path deeper nested.finalType) ]
     else if name == "functionTo" then null
@@ -107,7 +115,7 @@ let
     # (virtualisation.vmVariant is a NixOS one, with all of these options again).
     else if name == "submodule" then
       if nested ? freeformType || (t.functor.payload.class or null) != null then simple "Dynamic"
-      else let c = namespace path deeper (t.getSubOptions [ ]); in { type = c.class; kind = "object"; inherit (c) classes; default = "new ${c.class} {}"; }
+      else let c = namespace path deeper (t.getSubOptions [ ]); in { type = c.class; plain = c.class; kind = "object"; inherit (c) classes; default = "new ${c.class} {}"; }
     else simple "Any";
 
   # A class for a set of options: a property for each option, and for each set of options in it.
@@ -120,11 +128,15 @@ let
         else if builtins.isAttrs o then
           let c = namespace p depth o; in [ { text = "  ${identifier n}: ${c.class}\n"; inherit (c) classes; } ]
         else [ ]) (builtins.attrNames opts);
-      class = className path;
+      body = concatStrings (map (m: m.text) members);
+      # Classes are named by their content until `schema` names them, so that identical ones
+      # (as systemd's units have) are one class.
+      hash = builtins.substring 0 16 (builtins.hashString "sha256" body);
+      class = "@@class:${hash}@@";
     in
     {
       inherit class members;
-      classes = [ "class ${class} {\n${concatStrings (map (m: m.text) members)}}\n" ] ++ concatMap (m: m.classes) members;
+      classes = [ { inherit hash; name = className "O_" path; text = "class ${class} {\n${body}}\n"; class = true; } ] ++ concatMap (m: m.classes) members;
     };
 
   # An option's value, or an Override of one (as are the values of attrsOf, which the module
@@ -132,7 +144,7 @@ let
   # (`new Mapping { ... }` makes no instances of them).
   overridable = t:
     if t.kind == "any" then t.type
-    else "${t.type}|Override${lib.optionalString (t.classes == [ ]) "(content is (${t.type}))"}";
+    else "${t.type}|Override${lib.optionalString (!builtins.any (c: c.class) t.classes) "(content is (${t.plain}))"}";
 
   # Objects (listings, mappings, classes, Dynamic) have an empty default, to amend; anything
   # else is null until set.
@@ -194,19 +206,27 @@ let
     else if name == "submodule" && !(nested ? freeformType) && builtins.isAttrs x then walk pkgs (t.getSubOptions [ ]) x
     else x;
   # The Pkl schema (source) of a NixOS configuration's options.
+  # Each class is there once, named after its shortest path (the first, of equally long ones).
   schema = options:
-    let root = namespace [ ] 0 options;
-    in concatStrings [
-      "/// The options of a NixOS configuration (generated by nix-truffle's nixos/pkl.nix).\n"
-      "/// Amend this module to set some: the options that are set (also to null, or to an empty\n"
-      "/// listing) are definitions, and unset ones are null (or empty) here.\n"
-      "module nixos\n\n"
-      overrides
-      "\n"
-      (concatStrings (map (m: builtins.replaceStrings [ "\n  " ] [ "\n" ] ("\n" + m.text)) root.members))
-      "\n"
-      (concatStringsSep "\n" (builtins.tail root.classes))
-    ];
+    let
+      root = namespace [ ] 0 options;
+      classes = builtins.tail root.classes;
+      shorter = a: b: builtins.stringLength a.name < builtins.stringLength b.name || builtins.stringLength a.name == builtins.stringLength b.name && a.name < b.name;
+      names = builtins.listToAttrs (map (c: { name = c.hash; value = c.name; }) (builtins.sort shorter classes));
+      unique = builtins.attrValues (builtins.listToAttrs (map (c: { name = c.hash; value = c; }) classes));
+      text = concatStrings [
+        "/// The options of a NixOS configuration (generated by nix-truffle's nixos/pkl.nix).\n"
+        "/// Amend this module to set some: the options that are set (also to null, or to an empty\n"
+        "/// listing) are definitions, and unset ones are null (or empty) here.\n"
+        "module nixos\n\n"
+        overrides
+        "\n"
+        (concatStrings (map (m: builtins.replaceStrings [ "\n  " ] [ "\n" ] ("\n" + m.text)) root.members))
+        "\n"
+        (concatStringsSep "\n" (map (c: c.text) (builtins.sort (a: b: names.${a.hash} < names.${b.hash}) unique)))
+      ];
+    in
+    concatStrings (map (x: if builtins.isList x then names.${builtins.head x} else x) (builtins.split "@@class:([0-9a-f]+)@@" text));
 in
 {
   /** The Pkl schema (source) of a NixOS configuration's options. */
