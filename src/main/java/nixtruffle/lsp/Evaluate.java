@@ -31,9 +31,18 @@ public final class Evaluate {
      * {@code offset} ({@code lib} in {@code inherit (lib) mkIf;}), in its scope.
      */
     public static Object at(String path, String text, int offset, String expression, Object args) {
+        return at(path, text, offset, expression, -1, args);
+    }
+
+    /**
+     * ... or, with {@code argument} not -1, the function the call at {@code offset} applies to
+     * its {@code argument}th argument ({@code f a} in {@code f a { ... }}).
+     */
+    public static Object at(String path, String text, int offset, String expression, int argument, Object args) {
         Source source = Source.newBuilder("nix", text, path).build();
         Expr root = new Parser(source).parseFile();
-        Expr target = expression != null ? new Parser(Source.newBuilder("nix", expression, path).build()).parseFile() : startingAt(root, offset);
+        Expr target = expression != null ? new Parser(Source.newBuilder("nix", expression, path).build()).parseFile()
+                : argument >= 0 ? calledAt(root, offset, argument) : startingAt(root, offset);
         if (target == null) throw nixtruffle.runtime.NixException.error("no expression there", null);
         List<Expr> binders = new ArrayList<>();
         collect(root, offset, binders);
@@ -70,6 +79,18 @@ public final class Evaluate {
     }
 
     private static final String ARGS = "__lspArgs";
+
+    /** The function of the call at {@code offset}, applied to its arguments before {@code argument}, or null. */
+    private static Expr calledAt(Expr e, int offset, int argument) {
+        if (e instanceof App app && app.pos() == offset && argument < app.args().size()) {
+            return argument == 0 ? app.fn() : new App(app.fn(), app.args().subList(0, argument), app.pos());
+        }
+        for (Expr c : Scopes.children(e)) {
+            Expr found = calledAt(c, offset, argument);
+            if (found != null) return found;
+        }
+        return null;
+    }
 
     /** The outermost expression that starts at {@code offset}, or null. */
     private static Expr startingAt(Expr e, int offset) {

@@ -869,6 +869,10 @@ public final class LspServer {
             }
             return items;
         }
+        List<Object> args = callArgumentItems(doc, start, offset, prefix);
+        if (args != null) return args;
+        List<Object> values = optionValueItems(doc, start, offset, prefix);
+        if (values != null) return values;
         List<String> optionPath = optionPath(doc, start, offset);
         if (optionPath != null) return optionItems(doc, optionPath, prefix);
         if (start > 0 && text.charAt(start - 1) == '.') {
@@ -960,6 +964,135 @@ public final class LspServer {
         while (s > 0 && (isNameChar(text.charAt(s - 1)) || text.charAt(s - 1) == '.')) s--;
         String path = text.substring(s, end);
         return path.isEmpty() || path.startsWith(".") || path.endsWith(".") || !Character.isLetter(path.charAt(0)) && path.charAt(0) != '_' ? "" : path;
+    }
+
+    // ------------------------------------------------------------ calls' argument sets
+
+    /**
+     * At a name in a set that a call gets ({@code fetchFromGitHub { ow }}): the function's
+     * arguments that the set hasn't yet (required ones first), or null (not there, or a function
+     * without named arguments).
+     */
+    private List<Object> callArgumentItems(Doc doc, int wordStart, int offset, String prefix) {
+        String text = doc.text;
+        int b = significantBefore(text, wordStart);
+        if (b == 0 || text.charAt(b - 1) != '{' && text.charAt(b - 1) != ';') return null;
+        String patched = text.substring(0, wordStart) + "x = null;" + text.substring(offset);
+        Expr root;
+        try {
+            root = parse(doc.uri, patched);
+        } catch (Parser.SyntaxError e) {
+            return null;
+        }
+        Object[] call = callAround(root, null, wordStart);
+        if (call == null) return null;
+        Expr.App app = (Expr.App) call[0];
+        Expr.Attrs set = (Expr.Attrs) call[2];
+        Value fn;
+        try {
+            if (lspEval == null) lspEval = context.eval("nix", "__nixTruffle.lspEval");
+            Map<String, Object> request = obj("file", Bytes.fromJava(Path.of(URI.create(doc.uri)).toString()), "text", Bytes.fromJava(patched),
+                    "offset", (long) patched.substring(0, app.pos()).getBytes(StandardCharsets.UTF_8).length, "argument", (long) (int) call[1]);
+            fn = lspEval.execute(Json.write(request).getBytes(StandardCharsets.ISO_8859_1), resolver(doc));
+        } catch (org.graalvm.polyglot.PolyglotException e) {
+            if (e.isInterrupted() || e.isCancelled()) throw e;
+            log("the function called: " + e.getMessage());
+            return null;
+        }
+        Value formals = context.eval("nix", """
+                f: if builtins.isFunction f then builtins.functionArgs f
+                   else if builtins.isAttrs f && f ? __functor then f.__functionArgs or (builtins.functionArgs (f.__functor f))
+                   else { }""").execute(fn);
+        if (!formals.hasMembers() || formals.getMemberKeys().isEmpty()) return null;
+        Set<String> set_ = new HashSet<>();
+        for (Expr.Binding bd : set.bindings()) {
+            if (bd instanceof Expr.Binding.Assign a && a.path().getFirst().name() != null && a.pos() != wordStart) set_.add(a.path().getFirst().name());
+            if (bd instanceof Expr.Binding.Inherit in) set_.addAll(in.names());
+        }
+        List<Object> items = new ArrayList<>();
+        for (String n : formals.getMemberKeys()) {
+            if (!n.startsWith(prefix) || set_.contains(n)) continue;
+            boolean optional = formals.getMember(n).asBoolean();
+            Map<String, Object> it = item(n, 10, optional ? "optional" : "required");
+            it.put("sortText", Bytes.fromJava((optional ? "1" : "0") + n));
+            items.add(it);
+        }
+        return items;
+    }
+
+    /**
+     * The call whose argument the set at {@code offset} is, at a name in it: (the call, which
+     * argument, the set), or null.
+     */
+    private static Object[] callAround(Expr e, Expr parent, int offset) {
+        if (e instanceof Expr.Attrs a) {
+            Expr.Binding last = null;
+            for (Expr.Binding bd : a.bindings()) if (bd.pos() <= offset) last = bd;
+            if (!(last instanceof Expr.Binding.Assign in) || offset < in.value().pos()) {
+                if (parent instanceof Expr.App app) {
+                    int i = app.args().indexOf(a);
+                    if (i >= 0) return new Object[] {app, i, a};
+                }
+                return null;
+            }
+        }
+        Expr in = null;
+        for (Expr c : Scopes.children(e)) if (c.pos() <= offset) in = c;
+        return in == null ? null : callAround(in, e, offset);
+    }
+
+    // ------------------------------------------------------------ option values
+
+    /**
+     * After {@code =} in a module ({@code mode = "|"}): the values the option's type allows
+     * (an enum's, true and false, null), or null.
+     */
+    private List<Object> optionValueItems(Doc doc, int wordStart, int offset, String prefix) {
+        String text = doc.text;
+        int q = wordStart;
+        boolean quoted = q > 0 && text.charAt(q - 1) == '"';
+        if (quoted) q--;
+        int eq = significantBefore(text, q);
+        if (eq == 0 || text.charAt(eq - 1) != '=' || eq >= 2 && "=!<>".indexOf(text.charAt(eq - 2)) >= 0) return null;
+        int keyEnd = significantBefore(text, eq - 1);
+        int nameStart = keyEnd;
+        while (nameStart > 0 && isNameChar(text.charAt(nameStart - 1))) nameStart--;
+        if (nameStart == keyEnd) return null;
+        List<String> path = optionPath(doc, nameStart, nameStart);
+        if (path == null) return null;
+        Value opts = optionsAt(doc, path);
+        String name = text.substring(nameStart, keyEnd);
+        if (opts == null || !opts.hasMember(name)) return null;
+        Value values;
+        try {
+            values = context.eval("nix", """
+                    o:
+                    let
+                      values = t:
+                        let n = t.name or ""; in
+                        if n == "enum" then t.functor.payload.values or t.functor.payload or [ ]
+                        else if n == "bool" then [ true false ]
+                        else if n == "nullOr" then values t.nestedTypes.elemType ++ [ null ]
+                        else if n == "either" then values t.nestedTypes.left ++ values t.nestedTypes.right
+                        else if builtins.elem n [ "uniq" "unique" ] then values t.nestedTypes.elemType
+                        else [ ];
+                    in
+                    if (o._type or null) == "option" then map builtins.toJSON (values o.type) else [ ]""").execute(opts.getMember(name));
+        } catch (org.graalvm.polyglot.PolyglotException e) {
+            if (e.isInterrupted() || e.isCancelled()) throw e;
+            return null;
+        }
+        List<Object> items = new ArrayList<>();
+        for (long i = 0; i < values.getArraySize(); i++) {
+            String v = values.getArrayElement(i).asString();
+            boolean string = v.startsWith("\"");
+            if (quoted && !string) continue;
+            String label = quoted ? (String) Json.parse(Bytes.fromJava(v)) : v;
+            if (quoted) label = Bytes.toJava(label);
+            if (!label.startsWith(prefix)) continue;
+            items.add(item(label, 12, String.join(".", path) + "." + name));
+        }
+        return items.isEmpty() ? null : items;
     }
 
     // ------------------------------------------------------------ NixOS options

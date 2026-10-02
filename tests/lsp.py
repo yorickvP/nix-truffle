@@ -184,6 +184,18 @@ partial = itext.replace("inherit (s) alpha;", "inherit (s) b")
 c.open(iuri, partial)
 check("completion of what to inherit", labels(c.at("textDocument/completion", iuri, partial, "b\n", 1)), ["beta"])
 
+# A call's argument set: the function's arguments.
+afile = (tmp / "args.nix").as_uri()
+atext = """let
+  f = { owner, repo ? "x", hash }: owner;
+  g = { __functor = self: x: x; __functionArgs = { a = false; }; };
+in [ (f { hash = 1;  }) (g { }) ]
+"""
+c.open(afile, atext)
+items = c.at("textDocument/completion", afile, atext, " }) (g", 1)
+check("a call's arguments", sorted((i["sortText"], i["label"], i["detail"]) for i in items), [("0owner", "owner", "required"), ("1repo", "repo", "optional")])
+check("an overridable function's arguments", labels(c.at("textDocument/completion", afile, atext, "{ }) ]", 2)), ["a"])
+
 # `with`: completion, hover, definition.
 wfile = tmp / "with.nix"
 wtext = """let
@@ -339,6 +351,15 @@ let cfg = config.services.nginx; in {
     partial = ltext.replace("inherit (lib) optional mkIf;", "inherit (lib) optionalS")
     c.open(lfile, partial)
     check("completion of what to inherit from lib", labels(c.at("textDocument/completion", lfile, partial, "optionalS\n", 9)), ["optionalString"])
+    fetch = mtext.replace("x = lib.optional true cfg.virtualHosts;", "x = pkgs.fetchFromGitHub { ow };")
+    c.open(module, fetch)
+    check("fetchFromGitHub's arguments", labels(c.at("textDocument/completion", module, fetch, "ow }", 2)), ["owner"])
+    enum = mtext.replace("services.openssh.enable = true;", 'services.openssh.settings.PermitRootLogin = "";')
+    c.open(module, enum)
+    check("an option's values", labels(c.at("textDocument/completion", module, enum, '"";', 1)), ["forced-commands-only", "no", "prohibit-password", "without-password", "yes"])
+    boolean = mtext.replace("services.openssh.enable = true;", "services.openssh.enable = ;")
+    c.open(module, boolean)
+    check("a boolean option's values", labels(c.at("textDocument/completion", module, boolean, "= ;", 2)), ["false", "true"])
     check("options on an empty line of a set", {"allowedTCPPorts", "allowedUDPPorts"} <= set(complete("firewall.allowedTCPPorts = [ 22 ];", "firewall = { enable = true;\n    \n  };", "    \n  };", 4)), True)
     check("options at a module's top", "services" in complete("services.openssh.enable = true;", "servi", "ervi\n", 4), True)
     check("options in a set", complete("firewall.allowedTCPPorts = [ 22 ];", "firewall.allowedTC", "allowedTC", 9), ["allowedTCPPortRanges", "allowedTCPPorts"])

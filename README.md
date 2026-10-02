@@ -447,6 +447,9 @@ LSP client: run `nix-truffle lsp` for files of type `nix`. It knows Nix the way 
     a local set's), of names from `with` (`with pkgs; [ hel`), and of NixOS options where a module
     sets them, through submodules (`services.nginx.virtualHosts."x".locations."/".proxyP`),
     `config = mkIf ... { ... }` and `mkMerge`;
+  - completion of a call's argument set (`fetchFromGitHub { ow`: the function's named
+    arguments, required ones first, not those set already) and of an option's value (`mode =
+    "`: an enum's values, `true`/`false`, `null`);
   - details of an item, and hover: an option's type, description and default; a package's name,
     description, homepage and licenses; a function's arguments and doc comment (RFC 145
     `/** */`, as nixpkgs' lib has, or `#` lines);

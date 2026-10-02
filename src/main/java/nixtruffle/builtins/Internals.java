@@ -78,7 +78,8 @@ final class Internals {
                         ((Number) r.get("offset")).intValue(), a[1]);
             }
             return nixtruffle.lsp.Evaluate.at(nixtruffle.util.Json.str(r.get("file")), nixtruffle.util.Json.str(r.get("text")),
-                    ((Number) r.get("offset")).intValue(), r.get("expression") instanceof String e ? e : null, a[1]);
+                    ((Number) r.get("offset")).intValue(), r.get("expression") instanceof String e ? e : null,
+                    r.get("argument") instanceof Number n ? n.intValue() : -1, a[1]);
         });
         put(m, "callsTo", 2, a -> {
             // [ the arguments the file's function was called with while evaluating f null ]
