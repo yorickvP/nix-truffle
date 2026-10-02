@@ -65,6 +65,8 @@ cat > calls.pkl <<'EOF'
 import "nix:f" as f
 now = f.inc.call(1).text
 curried = f.add.call(1).call(2).text
+more = f.add3.call3(1, 2, 3).text
+rest = f.add3.call(1).call2(2, 3).text
 list = f.pair.call("a").call(new Listing { "b" }).text
 path = "\(f.id.call(f.d).text)/bin/x"
 later = f.mk.call("y")
@@ -107,8 +109,8 @@ check "defaults = false: what the files set" '{ count = null; extra = [ "from-co
   'builtins.pkl { module = ./layered.pkl; defaults = false; }' --strict
 check "defaults = false: lazily" '8081' 'let r = builtins.pkl { module = ./lazy.pkl; defaults = false; nix.self = r; }; in r.count'
 check "defaults = false: Pkl's errors when used" 'error: Pkl: not used' 'let r = builtins.pkl { module = ./lazy.pkl; defaults = false; nix.self = r; }; in r.main.enable'
-check "calls of Nix functions" "[ \"2\" \"3\" \"[\\\"a\\\",[\\\"b\\\"]]\" true \"y\" true ]" \
-  'let d = derivation { name = "x"; builder = "/bin/sh"; system = "x86_64-linux"; }; r = builtins.pkl { module = ./calls.pkl; nix.f = { inc = x: x + 1; add = a: b: a + b; pair = a: b: [ a b ]; id = x: x; inherit d; mk = name: derivation { inherit name; builder = "/bin/sh"; system = "x86_64-linux"; }; }; }; in [ r.now r.curried r.list (builtins.hasContext r.path) r.later.name (r.same == d) ]' --strict
+check "calls of Nix functions" "[ \"2\" \"3\" \"6\" \"6\" \"[\\\"a\\\",[\\\"b\\\"]]\" true \"y\" true ]" \
+  'let d = derivation { name = "x"; builder = "/bin/sh"; system = "x86_64-linux"; }; r = builtins.pkl { module = ./calls.pkl; nix.f = { inc = x: x + 1; add = a: b: a + b; add3 = a: b: c: a + b + c; pair = a: b: [ a b ]; id = x: x; inherit d; mk = name: derivation { inherit name; builder = "/bin/sh"; system = "x86_64-linux"; }; }; }; in [ r.now r.curried r.more r.rest r.list (builtins.hasContext r.path) r.later.name (r.same == d) ]' --strict
 check "a missing nix: attribute" "error: Pkl: I/O error loading module \`nix:d.missing\`." 'builtins.pkl { text = "import \"nix:d.missing\" as m\nx = m.value"; nix.d = { }; }'
 check "pure evaluation" "error: Pkl: access to absolute path '/etc/hostname' is forbidden in pure evaluation mode (use '--impure' to override)" \
   'builtins.pkl { text = "x = read(\"file:///etc/hostname\")"; }' --option pure-eval true

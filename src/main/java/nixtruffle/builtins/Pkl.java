@@ -686,7 +686,8 @@ final class Pkl {
     }
 
     /**
-     * What the module of a Nix function (or functor) has: {@code f.call(x)} is a {@code NixCall},
+     * What the module of a Nix function (or functor) has: {@code f.call(x)} is a {@code NixCall}
+     * ({@code call2} to {@code call5}: more arguments, curried),
      * which is {@code f x} when it goes back to Nix (lazily, the result as it is); its
      * {@code text} is the result now, as {@code read("nix:...")} has values, through a read of
      * {@code nix:@call?BASE64} (JSON of the call: {@code {"$nix": uri}} for nix: modules,
@@ -697,11 +698,20 @@ final class Pkl {
             /// A call of this Nix function, which is its result when it goes back to Nix.
             /// `.text` is the result now (a string, a derivation's output path, JSON).
             function call(x): NixCall = new { fn = module; arg = x }
+            /// Calls with more arguments, one after the other: `call2(a, b)` is `call(a).call(b)`.
+            function call2(a, b): NixCall = call(a).call(b)
+            function call3(a, b, c): NixCall = call(a).call(b).call(c)
+            function call4(a, b, c, d): NixCall = call(a).call(b).call(c).call(d)
+            function call5(a, b, c, d, e): NixCall = call(a).call(b).call(c).call(d).call(e)
             class NixCall {
               fn: Typed
               arg: Any
               /// A call of the result (a curried function's next argument).
               function call(x): NixCall = let (self = this) new NixCall { fn = self; arg = x }
+              function call2(a, b): NixCall = call(a).call(b)
+              function call3(a, b, c): NixCall = call(a).call(b).call(c)
+              function call4(a, b, c, d): NixCall = call(a).call(b).call(c).call(d)
+              function call5(a, b, c, d, e): NixCall = call(a).call(b).call(c).call(d).call(e)
               hidden text: String = read("nix:@call?" + new JsonRenderer {}.renderValue(__encode(this)).base64)
             }
             local const function __encode(v): Any =

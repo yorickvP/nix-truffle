@@ -222,7 +222,8 @@ its Java API) on the JVM. Three directions work (see `examples/pkl`, `tests/pkl.
   when it goes back to Nix: Nix evaluates it then, lazily, and it is the derivation itself. A
   call's `text` is its result now, as text (as `read` has values), for Pkl to use:
   `"\(lib.getExe.call(pkgs.hello).text) --greeting hi"`. Curried functions take
-  `f.call(a).call(b)`. (Pkl can't get other values from outside at run time: `read` is text,
+  `f.call(a).call(b)`, or `f.call2(a, b)` (up to `call5`: Pkl has neither variadic functions nor
+  overloading). (Pkl can't get other values from outside at run time: `read` is text,
   imports are constant, so `text` sends the call as JSON in the URI of a `read`.)
 
 `builtins.pkl` takes `module` (a path) or `text`, and optionally `amend` (with `module`),
