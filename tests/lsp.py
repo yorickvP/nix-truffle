@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 root = Path(__file__).resolve().parent.parent
@@ -15,7 +16,8 @@ truffle = os.environ.get("TRUFFLE", str(root / "bin" / "nix-truffle"))
 
 
 class Client:
-    def __init__(self):
+    def __init__(self, init=None):
+        self.init = init
         env = dict(os.environ, NIX_TRUFFLE_DAEMON="0")
         self.proc = subprocess.Popen([truffle, "lsp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
         self.next_id = 0
@@ -161,6 +163,49 @@ check("hover on a nested attribute", c.at("textDocument/hover", luri, ltext, "b 
 c.request("shutdown", None)
 c.notify("exit", None)
 check("exit", c.proc.wait(timeout=30), 0)
+
+# A long evaluation: answered when it times out, or is cancelled, and meanwhile what needs no
+# evaluation is answered at once.
+c = Client()
+c.request("initialize", {"processId": None, "rootUri": tmp.as_uri(), "capabilities": {}, "initializationOptions": {"evalTimeout": 1}})
+slow = (tmp / "slow.nix").as_uri()
+stext = """let
+  deep = n: if n == 0 then 0 else deep (n - 1);
+  s = builtins.seq (builtins.foldl' (a: b: a + deep 5000) 0 (builtins.genList (x: x) 1000000)) { a = 1; };
+  t = { b = 2; };
+in [ s.a t.b ]
+"""
+c.open(slow, stext)
+
+
+def send_at(method, uri, text, marker):
+    offset = text.index(marker)
+    line = text.count("\n", 0, offset)
+    c.next_id += 1
+    c.send({"id": c.next_id, "method": method, "params": {"textDocument": {"uri": uri},
+            "position": {"line": line, "character": offset - (text.rfind("\n", 0, offset) + 1)}}})
+    return c.next_id
+
+
+def answer(id):
+    while True:
+        msg = c.read()
+        if msg.get("id") == id:
+            return msg
+
+
+start = time.time()
+slow_id = send_at("textDocument/completion", slow, stext, "a t.b")
+check("references meanwhile", len(c.at("textDocument/references", slow, stext, "deep 5000")), 3)
+check("answered quickly meanwhile", time.time() - start < 0.9, True)
+check("timed out", (labels(answer(slow_id)["result"]), round(time.time() - start)), ([], 1))
+check("evaluates after a timeout", labels(c.at("textDocument/completion", slow, stext, "b ]")), ["b"])
+cancel_id = send_at("textDocument/completion", slow, stext, "a t.b")
+time.sleep(0.2)
+c.notify("$/cancelRequest", {"id": cancel_id})
+check("cancelled", answer(cancel_id).get("error", {}).get("code"), -32800)
+c.request("shutdown", None)
+c.notify("exit", None)
 
 # With NIXPKGS (a nixpkgs path): pkgs and lib as a file's arguments, NixOS options in a module.
 nixpkgs = os.environ.get("NIXPKGS")

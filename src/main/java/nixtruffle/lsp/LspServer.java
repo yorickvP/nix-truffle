@@ -38,6 +38,11 @@ import java.util.TreeMap;
  * first NixOS configuration's {@code config}, {@code options} and {@code pkgs}), else
  * {@code import <nixpkgs> { }}, and other names from {@code pkgs} (as callPackage does). The
  * client's {@code initializationOptions} can say {@code nixpkgs} and {@code nixos} (expressions).
+ *
+ * <p>Requests that evaluate run one at a time on a worker thread, on the document as it was when
+ * they came, and an evaluation that takes longer than {@code evalTimeout} (seconds, default 10)
+ * or whose request is cancelled is interrupted. Everything else (documents, diagnostics, what
+ * needs no evaluation) is answered by the thread that reads the messages, so meanwhile too.
  */
 public final class LspServer {
     private static final List<String> KEYWORDS = List.of("assert", "else", "if", "in", "inherit", "let", "or", "rec", "then", "with");
@@ -47,11 +52,17 @@ public final class LspServer {
     private final Context context;
     private final Set<String> globals = new HashSet<>();
     private final List<String> builtinNames = new ArrayList<>();
-    private final Map<String, Doc> docs = new HashMap<>();
-    private boolean shutdown;
+    private final Map<String, Doc> docs = new java.util.concurrent.ConcurrentHashMap<>();
+    private volatile boolean shutdown;
     /** The workspace's directory, and the client's initializationOptions. */
-    private String rootPath;
-    private Map<String, Object> initOptions = Map.of();
+    private volatile String rootPath;
+    private volatile Map<String, Object> initOptions = Map.of();
+
+    /** The thread that evaluates (all of the fields below are its), and the timeouts' timer. */
+    private final java.util.concurrent.ExecutorService worker = java.util.concurrent.Executors.newSingleThreadExecutor(r -> daemon(r, "lsp-eval"));
+    private final java.util.concurrent.ScheduledExecutorService timer = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> daemon(r, "lsp-timer"));
+    private final Map<Object, Task> tasks = new java.util.concurrent.ConcurrentHashMap<>();
+    private volatile Task running;
     private Value lspEval;
     /** {@code name: request: ...}: the resolver for the NixOS configuration {@code name} (or the first). */
     private Value resolvers;
@@ -59,21 +70,61 @@ public final class LspServer {
     private List<String> configNames;
     private Value describe;
 
-    /** An open document, and its last parse. */
+    /** An open document as it is at one time, and its parse. */
     private static final class Doc {
         final String uri;
-        String text;
-        Lines lines;
-        Expr root;
-        Parser.SyntaxError error;
-        Scopes scopes;
+        final String text;
+        final Lines lines;
+        final Expr root;
+        final Parser.SyntaxError error;
+        final Scopes scopes;
         /** The last text that parsed, and its tree: for completion while the text doesn't. */
-        String goodText;
-        Expr goodRoot;
+        final String goodText;
+        final Expr goodRoot;
 
-        Doc(String uri) {
+        Doc(String uri, String text, Doc previous, Set<String> globals) {
             this.uri = uri;
+            this.text = text;
+            this.lines = new Lines(text);
+            Expr root = null;
+            Parser.SyntaxError error = null;
+            Scopes scopes = null;
+            try {
+                root = parse(uri, text);
+                scopes = Scopes.analyze(text, root, globals);
+            } catch (Parser.SyntaxError e) {
+                error = e;
+            }
+            this.root = root;
+            this.error = error;
+            this.scopes = scopes;
+            this.goodText = root != null ? text : previous != null ? previous.goodText : null;
+            this.goodRoot = root != null ? root : previous != null ? previous.goodRoot : null;
         }
+    }
+
+    /** A request that evaluates: answered by the worker. */
+    private static final class Task {
+        final Object id;
+        final String method;
+        final Map<String, Object> params;
+        final Doc doc;
+        volatile boolean cancelled;
+        volatile String interrupted;
+
+        Task(Object id, String method, Map<String, Object> params, Doc doc) {
+            this.id = id;
+            this.method = method;
+            this.params = params;
+            this.doc = doc;
+        }
+    }
+
+    private static Thread daemon(Runnable r, String name) {
+        // Evaluation recurses deeply: the stack the command line's evaluation has (see Main).
+        Thread t = new Thread(null, r, name, Long.getLong("nixtruffle.stackMb", 128) << 20);
+        t.setDaemon(true);
+        return t;
     }
 
     LspServer(InputStream in, OutputStream out, Context context) {
@@ -93,23 +144,120 @@ public final class LspServer {
     // ------------------------------------------------------------ transport
 
     int serve() throws IOException {
-        while (true) {
-            Map<String, Object> msg = read();
-            if (msg == null) return shutdown ? 0 : 1;
-            String method = msg.get("method") instanceof String m ? Bytes.toJava(m) : null;
-            Object id = msg.get("id");
-            if (method == null) continue;
-            if (method.equals("exit")) return shutdown ? 0 : 1;
-            Map<String, Object> params = msg.get("params") instanceof Map<?, ?> ? Json.obj(msg.get("params")) : Map.of();
-            try {
-                Object result = handle(method, params);
-                if (id != null) respond(id, result == null ? Json.NULL : result, null);
-            } catch (Unknown e) {
-                if (id != null) respond(id, null, error(-32601, "unknown method " + method));
-            } catch (RuntimeException e) {
-                if (id != null) respond(id, null, error(-32603, String.valueOf(e)));
+        try {
+            while (true) {
+                Map<String, Object> msg = read();
+                if (msg == null) return shutdown ? 0 : 1;
+                String method = msg.get("method") instanceof String m ? Bytes.toJava(m) : null;
+                Object id = msg.get("id");
+                if (method == null) continue;
+                if (method.equals("exit")) return shutdown ? 0 : 1;
+                Map<String, Object> params = msg.get("params") instanceof Map<?, ?> ? Json.obj(msg.get("params")) : Map.of();
+                if (method.equals("$/cancelRequest")) {
+                    cancel(params.get("id"));
+                } else if (EVALUATING.contains(method)) {
+                    Task task = new Task(id, method, params, docOf(method, params));
+                    if (id != null) tasks.put(id, task);
+                    worker.execute(() -> run(task));
+                } else {
+                    answer(id, () -> handle(method, params));
+                }
             }
+        } finally {
+            worker.shutdownNow();
+            timer.shutdownNow();
         }
+    }
+
+    /** The requests that may evaluate. */
+    private static final Set<String> EVALUATING = Set.of("textDocument/completion", "textDocument/hover", "textDocument/definition", "completionItem/resolve");
+
+    /** The document a request is about, as it is now. */
+    private Doc docOf(String method, Map<String, Object> params) {
+        Object uri = method.equals("completionItem/resolve")
+                ? params.get("data") instanceof Map<?, ?> d ? ((Map<?, ?>) d).get("uri") : null
+                : params.get("textDocument") instanceof Map<?, ?> td ? ((Map<?, ?>) td).get("uri") : null;
+        return uri instanceof String u ? docs.get(Bytes.toJava(u)) : null;
+    }
+
+    private void answer(Object id, java.util.function.Supplier<Object> f) {
+        try {
+            Object result = f.get();
+            if (id != null) respond(id, result == null ? Json.NULL : result, null);
+        } catch (Unknown e) {
+            if (id != null) respondQuietly(id, null, error(-32601, "unknown method"));
+        } catch (RuntimeException e) {
+            if (id != null) respondQuietly(id, null, error(-32603, String.valueOf(e)));
+        } catch (IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+    }
+
+    private void respondQuietly(Object id, Object result, Map<String, Object> error) {
+        try {
+            respond(id, result, error);
+        } catch (IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+    }
+
+    /** Runs an evaluating request on the worker, interrupted when it takes too long or is cancelled. */
+    private void run(Task task) {
+        if (task.cancelled) {
+            if (task.id != null) tasks.remove(task.id);
+            respondQuietly(task.id, null, error(-32800, "cancelled"));
+            return;
+        }
+        long seconds = initOptions.get("evalTimeout") instanceof Number n ? n.longValue() : 10;
+        running = task;
+        java.util.concurrent.ScheduledFuture<?> timeout = timer.schedule(() -> interrupt(task, "timed out after " + seconds + " s"), seconds, java.util.concurrent.TimeUnit.SECONDS);
+        try {
+            Object result = null;
+            RuntimeException failure = null;
+            try {
+                result = handleEvaluating(task);
+            } catch (RuntimeException e) {
+                failure = e;
+            }
+            if (task.interrupted != null) log(task.method + ": evaluation " + task.interrupted);
+            if (task.id == null) return;
+            if (task.cancelled) respondQuietly(task.id, null, error(-32800, "cancelled"));
+            else if (failure instanceof Unknown) respondQuietly(task.id, null, error(-32601, "unknown method"));
+            else if (failure != null) respondQuietly(task.id, null, error(-32603, String.valueOf(failure)));
+            else respondQuietly(task.id, result == null ? Json.NULL : result, null);
+        } finally {
+            timeout.cancel(false);
+            running = null;
+            if (task.id != null) tasks.remove(task.id);
+        }
+    }
+
+    private void cancel(Object id) {
+        Task task = id == null ? null : tasks.get(id);
+        if (task == null) return;
+        task.cancelled = true;
+        interrupt(task, "cancelled");
+    }
+
+    /** Interrupts the evaluation of {@code task} if it's the one running. */
+    private void interrupt(Task task, String why) {
+        if (running != task) return;
+        task.interrupted = why;
+        try {
+            context.interrupt(java.time.Duration.ofSeconds(5));
+        } catch (java.util.concurrent.TimeoutException | RuntimeException e) {
+            log("interrupting: " + e);
+        }
+    }
+
+    private Object handleEvaluating(Task task) {
+        return switch (task.method) {
+            case "completionItem/resolve" -> resolveItem(task.params);
+            case "textDocument/completion" -> at(task, this::completion);
+            case "textDocument/hover" -> at(task, this::hover);
+            case "textDocument/definition" -> at(task, this::definition);
+            default -> throw new Unknown();
+        };
     }
 
     private static final class Unknown extends RuntimeException {}
@@ -193,8 +341,7 @@ public final class LspServer {
                         "completionProvider", obj("triggerCharacters", List.of("."), "resolveProvider", true)),
                         "serverInfo", obj("name", "nix-truffle"));
             }
-            case "completionItem/resolve" -> resolveItem(params);
-            case "initialized", "$/cancelRequest", "$/setTrace", "workspace/didChangeConfiguration", "textDocument/didSave" -> null;
+            case "initialized", "$/setTrace", "workspace/didChangeConfiguration", "textDocument/didSave" -> null;
             case "shutdown" -> {
                 shutdown = true;
                 yield null;
@@ -216,10 +363,7 @@ public final class LspServer {
                 notify("textDocument/publishDiagnostics", obj("uri", Bytes.fromJava(uri), "diagnostics", List.of()));
                 yield null;
             }
-            case "textDocument/definition" -> at(params, this::definition);
             case "textDocument/references" -> at(params, this::references);
-            case "textDocument/hover" -> at(params, this::hover);
-            case "textDocument/completion" -> at(params, this::completion);
             default -> {
                 if (method.startsWith("$/")) yield null;
                 throw new Unknown();
@@ -232,7 +376,14 @@ public final class LspServer {
     }
 
     private Object at(Map<String, Object> params, AtOffset f) {
-        Doc doc = docs.get(Bytes.toJava(Json.str(Json.obj(params.get("textDocument")).get("uri"))));
+        return at(docs.get(Bytes.toJava(Json.str(Json.obj(params.get("textDocument")).get("uri")))), params, f);
+    }
+
+    private Object at(Task task, AtOffset f) {
+        return at(task.doc, task.params, f);
+    }
+
+    private static Object at(Doc doc, Map<String, Object> params, AtOffset f) {
         if (doc == null) return null;
         Map<String, Object> p = Json.obj(params.get("position"));
         return f.apply(doc, doc.lines.offset(((Number) p.get("line")).intValue(), ((Number) p.get("character")).intValue()));
@@ -241,20 +392,8 @@ public final class LspServer {
     // ------------------------------------------------------------ documents
 
     private void update(String uri, String text) {
-        Doc doc = docs.computeIfAbsent(uri, Doc::new);
-        doc.text = text;
-        doc.lines = new Lines(text);
-        doc.error = null;
-        doc.root = null;
-        doc.scopes = null;
-        try {
-            doc.root = parse(uri, text);
-            doc.scopes = Scopes.analyze(text, doc.root, globals);
-            doc.goodText = text;
-            doc.goodRoot = doc.root;
-        } catch (Parser.SyntaxError e) {
-            doc.error = e;
-        }
+        Doc doc = new Doc(uri, text, docs.get(uri), globals);
+        docs.put(uri, doc);
         notify("textDocument/publishDiagnostics", obj("uri", Bytes.fromJava(uri), "diagnostics", diagnostics(doc)));
     }
 
@@ -655,6 +794,7 @@ public final class LspServer {
             try {
                 return lspEval.execute(json, resolver(doc));
             } catch (org.graalvm.polyglot.PolyglotException e) {
+                if (e.isInterrupted() || e.isCancelled()) throw e;
                 // Without the guesses (no <nixpkgs>, say), for what doesn't need them.
                 log("evaluating " + expression + ": " + e.getMessage() + "; again without arguments");
                 if (noArguments == null) noArguments = context.eval("nix", """
