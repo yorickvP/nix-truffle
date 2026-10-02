@@ -262,6 +262,8 @@ check("unclosed brace", [m for m in diagnostics_of(rbase.replace("    d = used;\
       [(1, "unused argument 'pkgs'"), (4, "unused binding 'unused'"), (7, "undefined variable 'missing'")])
 broken = rbase.replace("a = used;", "a = used")
 c.open(rfile, broken)
+pfix = c.request("textDocument/codeAction", {"textDocument": {"uri": rfile}, "range": {"start": {"line": 5, "character": 0}, "end": {"line": 5, "character": 0}}, "context": {"diagnostics": []}})
+check("a quick fix for a missing ;", [(f["title"], f["edit"]["changes"][rfile][0]["range"]["start"]["line"]) for f in pfix], [("Insert `;`", 5)])
 check("references in a broken text", [r["range"]["start"]["line"] for r in c.at("textDocument/references", rfile, broken, "used =")], [2, 5, 8])
 check("rename in a broken text", len(c.request("textDocument/rename", {"textDocument": {"uri": rfile}, "position": {"line": 2, "character": 3}, "newName": "u"})["changes"][rfile]), 3)
 
@@ -360,6 +362,10 @@ let cfg = config.services.nginx; in {
     boolean = mtext.replace("services.openssh.enable = true;", "services.openssh.enable = ;")
     c.open(module, boolean)
     check("a boolean option's values", labels(c.at("textDocument/completion", module, boolean, "= ;", 2)), ["false", "true"])
+    graphics = mtext.replace("services.openssh.enable = true;", "hardware.graphics = {\n    enable = true;\n    \n  };")
+    c.open(module, graphics)
+    gl = complete("services.openssh.enable = true;", "hardware.graphics = {\n    enable = true;\n    \n  };", "    \n  };", 4)
+    check("options set already aren't offered", ("enable" in gl, "enable32Bit" in gl), (False, True))
     check("options on an empty line of a set", {"allowedTCPPorts", "allowedUDPPorts"} <= set(complete("firewall.allowedTCPPorts = [ 22 ];", "firewall = { enable = true;\n    \n  };", "    \n  };", 4)), True)
     c.request("shutdown", None)
     c.notify("exit", None)
@@ -388,6 +394,9 @@ let cfg = config.services.nginx; in {
     check("evaluated diagnostics", evaluated, [(1, "no option `services.openssh.enabel`; did you mean `enable`?"),
                                                (2, "A definition for option `services.openssh.ports' is not of t"),
                                                (4, "no option `swapDevices.sise`; did you mean `size`?")])
+    fixes = c.request("textDocument/codeAction", {"textDocument": {"uri": dfile}, "range": {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 10}}, "context": {"diagnostics": []}})
+    check("a quick fix for a misspelled option", [(f["title"], f["edit"]["changes"][dfile][0]["newText"], f["edit"]["changes"][dfile][0]["range"]["start"]) for f in fixes],
+          [("Change to `enable`", "enable", {"line": 1, "character": 19})])
     check("options at a module's top", "services" in complete("services.openssh.enable = true;", "servi", "ervi\n", 4), True)
     check("options in a set", complete("firewall.allowedTCPPorts = [ 22 ];", "firewall.allowedTC", "allowedTC", 9), ["allowedTCPPortRanges", "allowedTCPPorts"])
     check("options in a submodule", complete('locations."/".proxyPass = "x";', 'locations."/".proxyP', "proxyP", 6), ["proxyPass"])

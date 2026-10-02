@@ -60,7 +60,11 @@ public final class LspServer {
     private volatile String rootPath;
     private volatile Map<String, Object> initOptions = Map.of();
     /** What evaluating a module's definitions found, by document: by option path, so that they move with the text. */
-    private record EvalDiagnostic(List<String> path, String message) {}
+    private record EvalDiagnostic(List<String> path, String message, String wrong, String meant) {
+        EvalDiagnostic(List<String> path, String message) {
+            this(path, message, null, null);
+        }
+    }
 
     private final Map<String, List<EvalDiagnostic>> evalDiagnostics = new java.util.concurrent.ConcurrentHashMap<>();
     /** Whether the client takes snippets in completion items. */
@@ -371,6 +375,7 @@ public final class LspServer {
                         "definitionProvider", true,
                         "referencesProvider", true,
                         "documentHighlightProvider", true,
+                        "codeActionProvider", obj("codeActionKinds", List.of("quickfix")),
                         "documentSymbolProvider", true,
                         "renameProvider", obj("prepareProvider", true),
                         "hoverProvider", true,
@@ -433,6 +438,7 @@ public final class LspServer {
             }
             case "textDocument/references" -> at(params, this::references);
             case "textDocument/documentHighlight" -> at(params, this::highlight);
+            case "textDocument/codeAction" -> codeActions(params);
             case "textDocument/prepareRename" -> at(params, (doc, offset) -> prepareRename(doc, offset));
             case "textDocument/rename" -> at(params, (doc, offset) -> rename(doc, offset, Bytes.toJava(Json.str(params.get("newName")))));
             case "textDocument/documentSymbol" -> {
@@ -719,6 +725,54 @@ public final class LspServer {
         }
     }
 
+    /**
+     * Quick fixes in a range: the name a "did you mean" meant, and the punctuation a syntax error
+     * misses (what repairing the text inserted first, if it is that).
+     */
+    private Object codeActions(Map<String, Object> params) {
+        Doc doc = docs.get(Bytes.toJava(Json.str(Json.obj(params.get("textDocument")).get("uri"))));
+        if (doc == null) return List.of();
+        Map<String, Object> r = Json.obj(params.get("range"));
+        Map<String, Object> st = Json.obj(r.get("start")), en = Json.obj(r.get("end"));
+        int from = doc.lines.offset(((Number) st.get("line")).intValue(), ((Number) st.get("character")).intValue());
+        int to = doc.lines.offset(((Number) en.get("line")).intValue(), ((Number) en.get("character")).intValue());
+        List<Object> actions = new ArrayList<>();
+        List<EvalDiagnostic> evaluated = evalDiagnostics.get(doc.uri);
+        if (evaluated != null && doc.root != null) {
+            Map<List<String>, ModuleDefinitions.Definition> defs = new HashMap<>();
+            for (ModuleDefinitions.Definition d : ModuleDefinitions.of(doc.text, doc.root)) defs.putIfAbsent(d.path(), d);
+            for (EvalDiagnostic e : evaluated) {
+                ModuleDefinitions.Definition d = defs.get(e.path());
+                if (e.meant() == null || d == null || d.keyEnd() < from || d.keyStart() > to) continue;
+                // the misspelled name, in the binding's names (the last time it's there)
+                String key = doc.text.substring(d.keyStart(), d.keyEnd());
+                java.util.regex.Matcher m = java.util.regex.Pattern.compile("(?<![\\w'-])\"?" + java.util.regex.Pattern.quote(e.wrong()) + "\"?(?![\\w'-])").matcher(key);
+                int at = -1, end = -1;
+                while (m.find()) {
+                    at = m.start();
+                    end = m.end();
+                }
+                if (at < 0) continue;
+                String replacement = e.meant().matches("[A-Za-z_][A-Za-z0-9_'-]*") ? e.meant() : "\"" + e.meant() + "\"";
+                actions.add(quickFix("Change to `" + e.meant() + "`", doc, d.keyStart() + at, d.keyStart() + end, replacement));
+            }
+        }
+        if (doc.repair != null && doc.repair.firstInsertion != null && List.of(";", "}", "]", ")", "\"").contains(doc.repair.firstInsertion)) {
+            int at = Math.min(doc.repair.firstInsertionAt(), doc.text.length());
+            int line = doc.lines.line(at);
+            if (doc.lines.line(from) <= line + 1 && line <= doc.lines.line(to) + 1) {
+                actions.add(quickFix("Insert `" + doc.repair.firstInsertion + "`", doc, at, at, doc.repair.firstInsertion));
+            }
+        }
+        return actions;
+    }
+
+    private Map<String, Object> quickFix(String title, Doc doc, int start, int end, String text) {
+        Map<String, Object> edit = obj("range", range(doc, start, end), "newText", Bytes.fromJava(text));
+        return obj("title", Bytes.fromJava(title), "kind", "quickfix", "isPreferred", true,
+                "edit", obj("changes", obj(Bytes.fromJava(doc.uri), List.of(edit))));
+    }
+
     /** The definition and the uses of the variable at the offset (written, read). */
     private Object highlight(Doc doc, int offset) {
         Scopes.Use u = useAt(doc, offset);
@@ -904,7 +958,11 @@ public final class LspServer {
         if (optionPath != null) {
             int eol = text.indexOf('\n', offset);
             boolean restOfLineEmpty = text.substring(offset, eol < 0 ? text.length() : eol).isBlank();
-            return optionItems(doc, optionPath, prefix, snippets && restOfLineEmpty);
+            // options the file sets already aren't offered again
+            Set<List<String>> defined = new HashSet<>();
+            Parseable pp = parseable(doc, start, offset);
+            if (pp != null) for (ModuleDefinitions.Definition d : ModuleDefinitions.of(pp.text, pp.root)) defined.add(d.path());
+            return optionItems(doc, optionPath, prefix, snippets && restOfLineEmpty, defined);
         }
         if (start > 0 && text.charAt(start - 1) == '.') {
             // An attribute of what the dotted path before it is, evaluated.
@@ -1196,7 +1254,8 @@ public final class LspServer {
                     Value sv = k.getMember("siblings");
                     for (long j = 0; j < sv.getArraySize(); j++) siblings.add(sv.getArrayElement(j).asString());
                     String meant = closest(prefix.getLast(), siblings);
-                    found.add(new EvalDiagnostic(d.path(), "no option `" + optionName(prefix) + "`" + (meant == null ? "" : "; did you mean `" + meant + "`?")));
+                    found.add(new EvalDiagnostic(d.path(), "no option `" + optionName(prefix) + "`" + (meant == null ? "" : "; did you mean `" + meant + "`?"),
+                            prefix.getLast(), meant));
                 } else if (kind.equals("option") && module != null) {
                     String problem = check(doc, module, d);
                     if (problem != null) found.add(new EvalDiagnostic(d.path(), problem));
@@ -1548,7 +1607,7 @@ public final class LspServer {
      * as {@code name = ...;}, the cursor in its value (a choice of true/false, or of a short
      * enum's values).
      */
-    private Object optionItems(Doc doc, List<String> path, String prefix, boolean snippet) {
+    private Object optionItems(Doc doc, List<String> path, String prefix, boolean snippet, Set<List<String>> defined) {
         List<Object> items = new ArrayList<>();
         Value opts = optionsAt(doc, path);
         if (opts == null || !opts.hasMembers()) return items;
@@ -1556,6 +1615,11 @@ public final class LspServer {
         for (String n : names) {
             Value o = opts.getMember(n);
             boolean option = o.hasMember("_type") && "option".equals(o.getMember("_type").isString() ? o.getMember("_type").asString() : null);
+            if (option) {
+                List<String> full = new ArrayList<>(path);
+                full.add(n);
+                if (defined.contains(full)) continue;
+            }
             Map<String, Object> it = obj("label", Bytes.fromJava(n), "kind", option ? 10L : 9L,
                     "data", obj("uri", Bytes.fromJava(doc.uri), "option", path.stream().map(x -> (Object) Bytes.fromJava(x)).toList(), "name", Bytes.fromJava(n)));
             if (option && snippet) {

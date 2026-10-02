@@ -457,6 +457,8 @@ LSP client: run `nix-truffle lsp` for files of type `nix`. It knows Nix the way 
     exist (`no option services.openssh.enabel; did you mean enable?`), and values that the
     module system's merge rejects for their option's type, each definition's value evaluated in
     its scope;
+  - quick fixes (code actions): the name a "did you mean" meant, the `;` (or bracket, quote) a
+    syntax error misses;
   - go to definition of attributes: a package's `meta.position`, an option's declarations, a
     function's own position, else the attribute's.
 
