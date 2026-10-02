@@ -384,6 +384,9 @@ let cfg = config.services.nginx; in {
     check("said in hover", evaluated_with(c, "shared/thing.nix", "only", 1), "`nixosConfigurations.beta` (its `pkgs`)")
     check("a package from the flake's package set", complete_in(c, "pkgs/foo.nix", "myHello.name", "myHello.nam", "nam\n", 3), ["name"])
     check("said in hover", evaluated_with(c, "pkgs/foo.nix", "name", 1), "`legacyPackages.x86_64-linux`")
+    foo = fl / "pkgs" / "foo.nix"
+    c.open(foo.as_uri(), foo.read_text())
+    check("definition of an argument: where its value is", c.at("textDocument/definition", foo.as_uri(), foo.read_text(), "myHello.name", 2)[0]["uri"].endswith("/pkgs/by-name/he/hello/package.nix"), True)
     check("an overlay's prev", "hello" in complete_in(c, "overlay.nix", "prev.hello", "prev.hel", "hel;", 3), True)
     check("home-manager's options", complete_in(c, "dots/main.nix", "homeOnly = true;", "homeO", "O\n", 1), ["homeOnly"])
     check("said in hover", evaluated_with(c, "dots/main.nix", "homeOnly", 2), "`homeConfigurations.me` (its `pkgs`)")

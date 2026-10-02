@@ -513,6 +513,19 @@ public final class LspServer {
 
     private Object definition(Doc doc, int offset) {
         Scopes.Use u = useAt(doc, offset);
+        // A function's attribute argument (`{ fetchFromGitHub, ... }:`): where its value comes
+        // from (the package set's fetchFromGitHub), else the argument.
+        Scopes.Def formal = u != null ? u.def() : defAt(doc, offset);
+        if (formal != null && formal.kind().equals("argument") && !formal.renamable()) {
+            try {
+                Value from = resolver(doc).execute(context.eval("nix", "name: { where = name; }").execute(formal.name()));
+                Object found = from == null || from.isNull() ? null : locations(from, formal.name());
+                if (found != null) return found;
+            } catch (org.graalvm.polyglot.PolyglotException e) {
+                if (e.isInterrupted() || e.isCancelled()) throw e;
+                log("where " + formal.name() + " comes from: " + e.getMessage());
+            }
+        }
         if (u != null && u.def() != null) return location(doc.uri, doc, u.def().pos(), u.def().name().length());
         Scopes.Def d = defAt(doc, offset);
         if (d != null) return location(doc.uri, doc, d.pos(), d.name().length());
@@ -597,7 +610,8 @@ public final class LspServer {
                         else if t == "lambda" && safe (__nixTruffle.lambdaPos v) != null then [ (__nixTruffle.lambdaPos v) ]
                         else if attr != null then [ attr ]
                         else [ ];
-                    in builtins.filter (p: p != null && builtins.isString (p.file or null)) (if found == null then [ ] else found)
+                    in builtins.filter (p: p != null && builtins.isString (p.file or null) && builtins.substring 0 1 p.file == "/")
+                      (if found == null then [ ] else found)
                     """);
         }
         return locate;
@@ -1180,7 +1194,11 @@ public final class LspServer {
                   value = name: special.${name} or pkgs.${name} or nested.${name} or (throw "nix-truffle lsp: no value for '${name}'");
                 in
                 request:
-                  if request ? arg then plain.${request.arg} or (value request.arg)
+                  # where a name comes from (for "go to definition"): the set it is in
+                  if request ? where then
+                    (if special ? ${request.where} then special else if pkgs ? ${request.where} then pkgs
+                     else if nested ? ${request.where} then nested else null)
+                  else if request ? arg then plain.${request.arg} or (value request.arg)
                   else builtins.listToAttrs (map (name: { inherit name; value = value name; })
                     (builtins.filter (n: special ? ${n} || pkgs ? ${n} || nested ? ${n} || !builtins.elem n request.optional) request.names));
             }
