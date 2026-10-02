@@ -173,6 +173,12 @@ ifile.write_text(itext)
 iuri = ifile.as_uri()
 c.open(iuri, itext)
 check("hover on an inherited name", c.at("textDocument/hover", iuri, itext, "alpha\n", 0)["contents"]["value"], "`alpha` (inherited): int `1`")
+sfile = tmp / "inherit-set.nix"
+stext = "let\n  s = { alpha = 1; beta = 2; };\nin { inherit (s) beta; }\n"
+sfile.write_text(stext)
+c.open(sfile.as_uri(), stext)
+check("hover on a name a set inherits", c.at("textDocument/hover", sfile.as_uri(), stext, "beta; }", 1)["contents"]["value"], "`beta` (inherited): int `2`")
+check("definition of a name a set inherits", [r["range"]["start"]["line"] for r in c.at("textDocument/definition", sfile.as_uri(), stext, "beta; }", 1)], [1])
 check("definition of an inherited name", [r["range"]["start"]["line"] for r in c.at("textDocument/definition", iuri, itext, "alpha\n", 0)], [1])
 partial = itext.replace("inherit (s) alpha;", "inherit (s) b")
 c.open(iuri, partial)

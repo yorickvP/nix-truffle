@@ -512,6 +512,12 @@ public final class LspServer {
     }
 
     private Object definition(Doc doc, int offset) {
+        int[] named = inheritedNameAt(doc, offset);
+        if (named != null) {
+            Value from = evaluateFrom(doc, named[0], named[0], named[2]);
+            Object found = from == null ? null : locations(from, doc.text.substring(named[0], named[1]));
+            if (found != null) return found;
+        }
         Scopes.Use u = useAt(doc, offset);
         // An inherited name (`inherit (lib) mkIf;`): its definition in what it's inherited from.
         Scopes.Def inherited = u != null ? u.def() : defAt(doc, offset);
@@ -622,7 +628,9 @@ public final class LspServer {
                         if option then
                           (if declared != null then declared
                            else map (f: { file = toString f; line = 1; column = 1; }) (v.declarations or [ ]))
-                        else if drv && safe (v.meta.position or null) != null then [ (fileLine v.meta.position) ]
+                        # (a fetched source's meta.position is its fetcher's code: the attribute's is better)
+                        else if drv && safe (v.meta.position or null) != null
+                          && !(attr != null && builtins.match ".*/pkgs/build-support/.*" v.meta.position != null) then [ (fileLine v.meta.position) ]
                         else if t == "lambda" && safe (__nixTruffle.lambdaPos v) != null then [ (__nixTruffle.lambdaPos v) ]
                         else if attr != null then [ attr ]
                         else [ ];
@@ -748,7 +756,24 @@ public final class LspServer {
         return out;
     }
 
+    /** A name in an {@code inherit (e) a b;} list, in a set or a let: (its start and end, where e starts), or null. */
+    private static int[] inheritedNameAt(Doc doc, int offset) {
+        int start = offset, end = offset;
+        while (start > 0 && isNameChar(doc.text.charAt(start - 1))) start--;
+        while (end < doc.text.length() && isNameChar(doc.text.charAt(end))) end++;
+        if (start == end) return null;
+        int from = inheritFromAt(doc.text, start);
+        return from < 0 ? null : new int[] {start, end, from};
+    }
+
     private Object hover(Doc doc, int offset) {
+        int[] named = inheritedNameAt(doc, offset);
+        if (named != null) {
+            String name = doc.text.substring(named[0], named[1]);
+            Value from = evaluateFrom(doc, named[0], named[0], named[2]);
+            String md = from == null ? null : describeMarkdown(from, name, "`" + name + "` (inherited)");
+            if (md != null) return obj("contents", obj("kind", "markdown", "value", Bytes.fromJava(md + footer(doc))), "range", range(doc, named[0], named[1]));
+        }
         Object option = hoverOption(doc, offset);
         if (option != null) return option;
         Object attr = hoverAttribute(doc, offset);
