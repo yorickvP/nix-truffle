@@ -77,6 +77,8 @@ public final class LspServer {
         final Lines lines;
         final Expr root;
         final Parser.SyntaxError error;
+        /** When the text doesn't parse: it repaired, for the rest of its analysis (or null). */
+        final Repair repair;
         final Scopes scopes;
         /** The last text that parsed, and its tree: for completion while the text doesn't. */
         final String goodText;
@@ -88,15 +90,22 @@ public final class LspServer {
             this.lines = new Lines(text);
             Expr root = null;
             Parser.SyntaxError error = null;
+            Repair repair = null;
             Scopes scopes = null;
             try {
                 root = parse(uri, text);
                 scopes = Scopes.analyze(text, root, globals);
             } catch (Parser.SyntaxError e) {
                 error = e;
+                repair = Repair.of(uri, text, e);
+                if (repair != null) {
+                    Repair r = repair;
+                    scopes = Scopes.analyze(r.text, r.root, globals).mapped(r::original, r::inserted);
+                }
             }
             this.root = root;
             this.error = error;
+            this.repair = repair;
             this.scopes = scopes;
             this.goodText = root != null ? text : previous != null ? previous.goodText : null;
             this.goodRoot = root != null ? root : previous != null ? previous.goodRoot : null;
@@ -374,7 +383,10 @@ public final class LspServer {
             case "textDocument/rename" -> at(params, (doc, offset) -> rename(doc, offset, Bytes.toJava(Json.str(params.get("newName")))));
             case "textDocument/documentSymbol" -> {
                 Doc doc = docs.get(Bytes.toJava(Json.str(Json.obj(params.get("textDocument")).get("uri"))));
-                yield doc == null || doc.root == null ? List.of() : DocumentSymbols.of(doc.text, doc.root, doc.lines::position);
+                if (doc == null) yield List.of();
+                if (doc.root != null) yield DocumentSymbols.of(doc.text, doc.root, doc.lines::position);
+                Repair r = doc.repair;
+                yield r == null ? List.of() : DocumentSymbols.of(r.text, r.root, o -> doc.lines.position(r.original(o)));
             }
             default -> {
                 if (method.startsWith("$/")) yield null;
@@ -416,9 +428,13 @@ public final class LspServer {
     private List<Object> diagnostics(Doc doc) {
         List<Object> out = new ArrayList<>();
         if (doc.error != null) {
-            int at = Math.min(doc.error.offset, doc.text.length());
-            out.add(diagnostic(doc, at, Math.min(at + 1, doc.text.length()), 1, Bytes.toJava(doc.error.detail), null));
-            return out;
+            List<int[]> offsets = doc.repair != null ? doc.repair.errorOffsets : List.<int[]>of(new int[] {doc.error.offset});
+            List<String> messages = doc.repair != null ? doc.repair.errorMessages : List.of(doc.error.detail);
+            for (int i = 0; i < offsets.size(); i++) {
+                int at = Math.min(offsets.get(i)[0], doc.text.length());
+                out.add(diagnostic(doc, at, Math.min(at + 1, doc.text.length()), 1, Bytes.toJava(messages.get(i)), null));
+            }
+            if (doc.scopes == null) return out;
         }
         Set<Scopes.Def> used = new HashSet<>();
         for (Scopes.Use u : doc.scopes.uses) {

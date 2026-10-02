@@ -141,7 +141,7 @@ check("completion of builtins", "length" in labels(c.at("textDocument/completion
 broken = "let\n  foo = 1;\n  bar = fo\n"
 c.open(main, broken)
 check("completion while the text doesn't parse", "foo" in labels(c.at("textDocument/completion", main, broken, "fo\n", 2)), True)
-check("syntax error", [(d["severity"], d["range"]["start"]["line"]) for d in c.diagnostics[main]], [(1, 3)])
+check("syntax errors", sorted({d["range"]["start"]["line"] for d in c.diagnostics[main] if d["severity"] == 1}) in ([3], [2, 3]), True)
 
 # Evaluated: attributes of what's in scope, and their docs.
 local = (tmp / "local.nix")
@@ -195,6 +195,39 @@ def refused(marker, delta=0):
 
 check("no renaming a formal", refused("pkgs,"), "can't rename this: it's an attribute of the function's argument")
 check("no renaming what's inherited", refused("lib;"), "can't rename this: it's inherited")
+
+# A text that doesn't parse is repaired for the rest of its analysis.
+rfile = (tmp / "broken.nix").as_uri()
+rbase = """{ pkgs, ... }:
+let
+  used = 1;
+  unused = 2;
+in {
+  a = used;
+  b = missing;
+  c = {
+    d = used;
+  };
+}
+"""
+
+
+def diagnostics_of(text):
+    c.open(rfile, text)
+    return sorted((d["range"]["start"]["line"] + 1, d["message"]) for d in c.diagnostics[rfile])
+
+
+check("missing value", diagnostics_of(rbase.replace("a = used;", "a = ")), [
+    (1, "unused argument 'pkgs'"), (4, "unused binding 'unused'"),
+    (7, "syntax error, unexpected '=', expecting SEMI"), (7, "undefined variable 'missing'")])
+check("missing ;", diagnostics_of(rbase.replace("a = used;", "a = used")), [
+    (1, "unused argument 'pkgs'"), (4, "unused binding 'unused'"), (7, "syntax error, unexpected '=', expecting SEMI"), (7, "undefined variable 'missing'")])
+check("unclosed brace", [m for m in diagnostics_of(rbase.replace("    d = used;\n  };", "    d = used;\n")) if not m[1].startswith("syntax")],
+      [(1, "unused argument 'pkgs'"), (4, "unused binding 'unused'"), (7, "undefined variable 'missing'")])
+broken = rbase.replace("a = used;", "a = used")
+c.open(rfile, broken)
+check("references in a broken text", [r["range"]["start"]["line"] for r in c.at("textDocument/references", rfile, broken, "used =")], [2, 5, 8])
+check("rename in a broken text", len(c.request("textDocument/rename", {"textDocument": {"uri": rfile}, "position": {"line": 2, "character": 3}, "newName": "u"})["changes"][rfile]), 3)
 
 c.request("shutdown", None)
 c.notify("exit", None)

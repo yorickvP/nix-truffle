@@ -408,29 +408,44 @@ LSP client: run `nix-truffle lsp` for files of type `nix`. It knows Nix the way 
 
 - **Without evaluating** (nix-truffle's parser and scoping, as CppNix binds names: lexical
   bindings, then globals, then `with`): syntax errors and undefined variables as errors, unused
-  `let` bindings and arguments greyed out, go to the definition of a variable or the file of a
-  path literal (`./dir` is its `default.nix`), references, hover, completion of the names in scope
-  and keywords, also while the text doesn't parse yet.
-- **Evaluating**, for what's after a `.` and for attribute names in modules: the expression is
-  evaluated as it would be at the cursor, in the scopes around it (`let`, recursive sets, `with`),
-  with the file's functions applied to what they would likely get: the workspace flake's
-  `self` and inputs, its NixOS configuration's `config`, `options`, `pkgs` and `lib` (the
+  `let` bindings and arguments greyed out, definitions and references of variables, the files of
+  path literals (`./dir` is its `default.nix`), highlight, an outline (document symbols), rename
+  (of `let` bindings and `x:` arguments: not of what other code names, like a function's
+  attribute arguments, a set's attributes or inherited names), hover, and completion of the names
+  in scope and keywords. A text that doesn't parse (being typed) is repaired where the parser
+  stops (`;`, `null;`, a closing bracket, ...) so that all of this goes on for the rest of it, and
+  each syntax error on the way is reported.
+- **Evaluating**, for what's after a `.`, names from `with`, and attribute names in modules: the
+  expression is evaluated as it would be at the cursor, in the scopes around it (`let`, recursive
+  sets, `with`), with the file's functions applied to what they would likely get: the workspace
+  flake's `self` and inputs, its NixOS configuration's `config`, `options`, `pkgs` and `lib` (the
   configuration named in the file's path, `machines/frumar/...`, else the first), or
   `import <nixpkgs> { }`, and anything else from `pkgs`, as callPackage does. Only what the
   cursor needs is evaluated: `pkgs.hel` completes in 0.4 s from a cold start, NixOS options in
   about a second, later ones at once.
-  - completion of attributes (`pkgs.`, `lib.strings.`, `cfg.` with `cfg = config.services.nginx`)
-    and of NixOS options where a module sets them, through submodules
-    (`services.nginx.virtualHosts."x".locations."/".proxyP`), `config = mkIf ... { ... }` and
-    `mkMerge` included;
-  - details of an item, and hover on attributes and option names: an option's type,
-    description and default; a package's name and description; a function's arguments and
-    doc comment (RFC 145 `/** */`, as nixpkgs' lib has, or `#` lines), found before its
-    definition.
+  - completion of attributes (`pkgs.`, `lib.strings.`, `cfg.` with `cfg = config.services.nginx`,
+    a local set's), of names from `with` (`with pkgs; [ hel`), and of NixOS options where a module
+    sets them, through submodules (`services.nginx.virtualHosts."x".locations."/".proxyP`),
+    `config = mkIf ... { ... }` and `mkMerge`;
+  - details of an item, and hover: an option's type, description and default; a package's name,
+    description, homepage and licenses; a function's arguments and doc comment (RFC 145
+    `/** */`, as nixpkgs' lib has, or `#` lines);
+  - go to definition of attributes: a package's `meta.position`, an option's declarations, a
+    function's own position, else the attribute's.
+
+  Evaluation runs on its own thread, one request at a time, on the document as it was when the
+  request came; everything else is answered meanwhile. An evaluation is interrupted when it takes
+  longer than `evalTimeout` (seconds, default 10) or its request is cancelled.
 
 The client's `initializationOptions` can set `nixpkgs` and `nixos` (Nix expressions: the
-NixOS configuration, like `(builtins.getFlake "/etc/nixos").nixosConfigurations.host`).
-Evaluation errors go to the client's log. `tests/lsp.py` is a scripted session.
+NixOS configuration, like `(builtins.getFlake "/etc/nixos").nixosConfigurations.host`) and
+`evalTimeout`. Evaluation errors go to the client's log. `tests/lsp.py` is a scripted session.
+
+Compared with nixd (2.9.2, the same scripted sessions): the same completion of `pkgs`, `lib` and
+NixOS options, hover and definitions of options and packages; nix-truffle also completes what
+it evaluates in the file's own scope (`cfg.`, a local set's attributes), where nixd evaluates
+fixed expressions only, and needs no configuration for a flake's machines; nixd also has
+formatting, folding, inlay hints and code actions (quick fixes).
 
 ## `builtins.wasm`
 

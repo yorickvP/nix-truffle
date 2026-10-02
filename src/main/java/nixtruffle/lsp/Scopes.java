@@ -217,6 +217,27 @@ public final class Scopes {
         return d;
     }
 
+    /**
+     * These names with their offsets mapped ({@code f}), without those at offsets {@code drop}
+     * says (where a {@link Repair} inserted text).
+     */
+    Scopes mapped(java.util.function.IntUnaryOperator f, java.util.function.IntPredicate drop) {
+        Scopes out = new Scopes(src, globals);
+        Map<Def, Def> defsMap = new java.util.HashMap<>();
+        for (Def d : defs) {
+            if (drop.test(d.pos())) continue;
+            Def m = new Def(d.name(), f.applyAsInt(d.pos()), d.kind(), d.renamable());
+            defsMap.put(d, m);
+            out.defs.add(m);
+        }
+        for (Use u : uses) {
+            if (drop.test(u.pos())) continue;
+            out.uses.add(new Use(u.name(), f.applyAsInt(u.pos()), u.kind(), u.def() == null ? null : defsMap.get(u.def()), u.inherited()));
+        }
+        for (PathRef p : paths) if (!drop.test(p.pos())) out.paths.add(new PathRef(p.text(), f.applyAsInt(p.pos())));
+        return out;
+    }
+
     // ------------------------------------------------------------ at an offset
 
     /** The names in scope at {@code offset}. */
