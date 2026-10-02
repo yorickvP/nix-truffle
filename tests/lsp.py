@@ -398,9 +398,13 @@ let cfg = config.services.nginx; in {
     c.notify("exit", None)
     (fl / "beta.nix").write_text(declares % ("beta.only", "Only beta has this."))
 
-    c = session({"configurations": {"shared/**": "flake.nixosConfigurations.alpha"}})
+    c = session({"configurations": {"shared/**": "flake.nixosConfigurations.alpha",
+                                    "dots/**": "{ inherit (flake.homeConfigurations.me) options; config = { }; pkgs = upstream; args.extra = { a = 1; }; }"}})
     check("a configuration by path", complete_in(c, "shared/thing.nix", "beta.only = true;", "alpha.on", "on\n", 2), ["only"])
-    check("said in hover", evaluated_with(c, "shared/thing.nix", "only", 1, "beta.only", "alpha.only"), "`flake.nixosConfigurations.alpha` (its `pkgs`)")
+    check("said in hover", evaluated_with(c, "shared/thing.nix", "only", 1, "beta.only", "alpha.only"), "the `configurations` setting for `shared/**` (its `pkgs`)")
+    check("a configuration made by hand", complete_in(c, "dots/main.nix", "homeOnly = true;", "homeO", "O\n", 1), ["homeOnly"])
+    check("its arguments", complete_in(c, "dots/main.nix", "{ config, pkgs, ... }: {\n  # a comment\n  homeOnly = true;",
+                                       "{ extra, ... }: {\n  x = extra.;", "extra.;", 6), ["a"])
     c.request("shutdown", None)
     c.notify("exit", None)
 

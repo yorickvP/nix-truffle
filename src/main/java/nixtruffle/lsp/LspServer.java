@@ -1158,8 +1158,12 @@ public final class LspServer {
               resolver = nixos: module:
                 let
                   pkgs = if module && nixos != null then nixos.pkgs or nixos._module.args.pkgs else packages.set;
+                  # A module gets its configuration's module arguments (modulesPath, NixOS's utils,
+                  # home-manager's osConfig, ...), and a configuration made by hand can say more
+                  # (args).
                   special = { inherit pkgs; lib = pkgs.lib; }
-                    // (if nixos != null then { inherit (nixos) config options; } else { })
+                    // (if module && nixos != null then nixos._module.args or { } else { })
+                    // (if nixos != null then nixos.args or { } // { inherit (nixos) config options; } else { })
                     // (if flake != null then inputs // { self = flake; inherit inputs; } else { });
                   # an overlay's plain arguments (final: prev:, self: super:)
                   plain = { final = pkgs; self = pkgs; prev = upstream; super = upstream; };
@@ -1233,7 +1237,7 @@ public final class LspServer {
             for (Map.Entry<?, ?> e : m.entrySet()) {
                 String glob = Bytes.toJava((String) e.getKey());
                 if (java.nio.file.FileSystems.getDefault().getPathMatcher("glob:" + glob).matches(Path.of(rel)) && e.getValue() instanceof String expr) {
-                    return selection("expr:" + Bytes.toJava(expr), unchecked(inScope(Bytes.toJava(expr))), module, "`" + Bytes.toJava(expr) + "`");
+                    return selection("expr:" + Bytes.toJava(expr), unchecked(inScope(Bytes.toJava(expr))), module, "the `configurations` setting for `" + glob + "`");
                 }
             }
         }
@@ -1259,7 +1263,7 @@ public final class LspServer {
                 : names.get("nixos").isEmpty() && !names.get("home").isEmpty() || rel != null && (rel.contains("home-manager") || rel.endsWith("home.nix")) && !names.get("home").isEmpty() ? "home"
                 : "nixos";
         String setting = setting(kind);
-        if (setting != null) return selection("expr:" + setting, unchecked(inScope(setting)), module, "`" + setting + "`");
+        if (setting != null) return selection("expr:" + setting, unchecked(inScope(setting)), module, "the `" + kind + "` setting");
         List<String> kindNames = names.get(kind);
         if (kindNames.isEmpty()) return selection("none", null, module, null);
         List<String> named = new ArrayList<>();

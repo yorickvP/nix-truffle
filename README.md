@@ -467,7 +467,14 @@ expressions in a scope with the workspace's `flake`, its `inputs`, `system` and 
 
 `nixpkgs` is the package set (`"upstream"`, or `"import inputs.nixpkgs { inherit system; overlays
 = [ flake.overlays.default ]; }"`), `nixos` and `home` the configuration for every NixOS or
-home-manager module, `configurations` one for the files a glob matches. Evaluation errors go to the client's log. `tests/lsp.py` is a
+home-manager module, `configurations` one for the files a glob matches. A configuration is
+anything with `options`, `config` and `pkgs` (and `args`, more arguments for its modules), so
+one can be made by hand, like home-manager's as a NixOS module (which the files it imports
+can't tell, as it imports them when the configuration's values are evaluated):
+
+```json
+"home": "let os = flake.nixosConfigurations.frumar; in { options = os.options.home-manager.users.type.getSubOptions [ ]; config = os.config.home-manager.users.yorick; pkgs = os.pkgs; args.osConfig = os.config; }"
+``` Evaluation errors go to the client's log. `tests/lsp.py` is a
 scripted session.
 
 Compared with nixd (2.9.2, the same scripted sessions): the same completion of `pkgs`, `lib` and
