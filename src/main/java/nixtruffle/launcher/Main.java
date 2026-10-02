@@ -39,6 +39,8 @@ public final class Main {
                   Evaluate and print, like 'nix-instantiate --eval --strict'.
               nix-truffle daemon (status | stop)
                   The daemon that keeps code warm between commands (NIX_TRUFFLE_DAEMON=1).
+              nix-truffle lsp
+                  A language server for Nix, over stdio (for editors).
 
             Options for FILE and -E:
               -A, --attr ATTRPATH        select an attribute (functions on the way are called)
@@ -194,6 +196,14 @@ public final class Main {
                 }
                 case "--repl" -> {
                     return Repl.command(options, new String[0]);
+                }
+                case "lsp" -> {
+                    try (Context context = options.build(false)) {
+                        return nixtruffle.lsp.LspServer.run(context);
+                    } catch (java.io.IOException e) {
+                        System.err.println("nix-truffle lsp: " + e.getMessage());
+                        return 1;
+                    }
                 }
                 case "daemon" -> {
                     System.err.println("nix-truffle: there is no daemon without NIX_TRUFFLE_DAEMON=1");

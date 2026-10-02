@@ -401,6 +401,37 @@ sides differ. `tests/eval-cli.sh` runs 195 command lines through both `nix eval`
 2.35) and `nix-truffle eval` and compares their output, exit status and lock files, including
 the evaluation of a real NixOS system flake.
 
+## Language server
+
+`nix-truffle lsp` is a language server for Nix (stdio; `nixtruffle/lsp`), for any editor with an
+LSP client: run `nix-truffle lsp` for files of type `nix`. It knows Nix the way the evaluator does:
+
+- **Without evaluating** (nix-truffle's parser and scoping, as CppNix binds names: lexical
+  bindings, then globals, then `with`): syntax errors and undefined variables as errors, unused
+  `let` bindings and arguments greyed out, go to the definition of a variable or the file of a
+  path literal (`./dir` is its `default.nix`), references, hover, completion of the names in scope
+  and keywords, also while the text doesn't parse yet.
+- **Evaluating**, for what's after a `.` and for attribute names in modules: the expression is
+  evaluated as it would be at the cursor, in the scopes around it (`let`, recursive sets, `with`),
+  with the file's functions applied to what they would likely get: the workspace flake's
+  `self` and inputs, its NixOS configuration's `config`, `options`, `pkgs` and `lib` (the
+  configuration named in the file's path, `machines/frumar/...`, else the first), or
+  `import <nixpkgs> { }`, and anything else from `pkgs`, as callPackage does. Only what the
+  cursor needs is evaluated: `pkgs.hel` completes in 0.4 s from a cold start, NixOS options in
+  about a second, later ones at once.
+  - completion of attributes (`pkgs.`, `lib.strings.`, `cfg.` with `cfg = config.services.nginx`)
+    and of NixOS options where a module sets them, through submodules
+    (`services.nginx.virtualHosts."x".locations."/".proxyP`), `config = mkIf ... { ... }` and
+    `mkMerge` included;
+  - details of an item, and hover on attributes and option names: an option's type,
+    description and default; a package's name and description; a function's arguments and
+    doc comment (RFC 145 `/** */`, as nixpkgs' lib has, or `#` lines), found before its
+    definition.
+
+The client's `initializationOptions` can set `nixpkgs` and `nixos` (Nix expressions: the
+NixOS configuration, like `(builtins.getFlake "/etc/nixos").nixosConfigurations.host`).
+Evaluation errors go to the client's log. `tests/lsp.py` is a scripted session.
+
 ## `builtins.wasm`
 
 Determinate Nix's `builtins.wasm` (behind the `wasm-builtin` experimental feature) runs
@@ -594,7 +625,8 @@ thunks in it.
 `NIX_CONFIG="eval-cores = 8"` too. `NIX=... tests/parallel.sh` evaluates expressions that
 workers share (cycles, errors, `max-call-depth`) with `eval-cores = 8`, several times each, and
 compares them with CppNix. `tests/repl.sh` drives `nix-truffle repl` (files, flakes, `:l`, `:lf`,
-`:r`). `tests/pkl.sh` tests Pkl from Nix. `tests/wasm.sh` tests
+`:r`). `tests/pkl.sh` tests Pkl from Nix. `tests/lsp.py` (Python 3) drives `nix-truffle lsp`
+(with `NIXPKGS=...`, NixOS options and nixpkgs too). `tests/wasm.sh` tests
 `builtins.wasm`, and with `PLUGINS`, `WASI` and `NIX_WASM_RUST` set runs nix-wasm-rust's test
 suite too.
 

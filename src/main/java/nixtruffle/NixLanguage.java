@@ -18,6 +18,7 @@ import com.oracle.truffle.api.nodes.RootNode;
 import com.oracle.truffle.api.source.Source;
 import nixtruffle.builtins.Builtins;
 import nixtruffle.nodes.ApplyThunkRootNode;
+import nixtruffle.parser.Expr;
 import nixtruffle.parser.Parser;
 import nixtruffle.runtime.Bytes;
 import nixtruffle.runtime.NixNull;
@@ -198,6 +199,12 @@ public final class NixLanguage extends TruffleLanguage<NixContext> {
         RootCallTarget target = new Translator(this, source, path, baseDir, replNames, scope).translateFile(new Parser(source).parseFile()).getCallTarget();
         if (cache) parsed.put(path, new Parsed(text, scope, target));
         return target;
+    }
+
+    /** A syntax tree of {@code source} (the language server's, see nixtruffle.lsp.Evaluate), as code. */
+    public RootCallTarget translate(Source source, String path, Expr e) {
+        String baseDir = path.contains("/") ? path.substring(0, Math.max(1, path.lastIndexOf('/'))) : cwd();
+        return new Translator(this, source, path, baseDir, null, NixContext.get(null).globalScope()).translateFile(e).getCallTarget();
     }
 
     /** The current directory, as a byte string. */

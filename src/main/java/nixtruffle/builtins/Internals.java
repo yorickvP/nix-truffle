@@ -21,6 +21,7 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.Map;
 import java.util.TreeMap;
 
 import static nixtruffle.runtime.Thunk.force;
@@ -64,6 +65,28 @@ final class Internals {
         });
         put(m, "importFile", 1, a -> FileBuiltins.importFile(Bytes.of(bytesIn(a[0]))));
         put(m, "nixEval", 1, a -> bytesOut(CliEval.run(nixtruffle.util.Json.obj(nixtruffle.util.Json.parse(Bytes.of(bytesIn(a[0])))))));
+        put(m, "globals", 1, a -> {
+            nixtruffle.GlobalScope g = NixContext.get(null).globalScope();
+            Object[] names = new Object[g.size()];
+            for (int i = 0; i < names.length; i++) names[i] = g.name(i);
+            return new nixtruffle.runtime.NixList(names);
+        });
+        put(m, "lspEval", 2, a -> {
+            Map<String, Object> r = nixtruffle.util.Json.obj(nixtruffle.util.Json.parse(Bytes.of(bytesIn(a[0]))));
+            return nixtruffle.lsp.Evaluate.at(nixtruffle.util.Json.str(r.get("file")), nixtruffle.util.Json.str(r.get("text")),
+                    ((Number) r.get("offset")).intValue(), nixtruffle.util.Json.str(r.get("expression")), a[1]);
+        });
+        put(m, "lambdaPos", 1, a -> {
+            // A function's position ({ file, line, column }), for the doc comment before it.
+            if (!(nixtruffle.runtime.Thunk.force(a[0]) instanceof nixtruffle.runtime.NixLambda l)) return nixtruffle.runtime.NixNull.INSTANCE;
+            com.oracle.truffle.api.source.SourceSection sec = l.target.getRootNode().getSourceSection();
+            if (sec == null || !sec.isAvailable()) return nixtruffle.runtime.NixNull.INSTANCE;
+            TreeMap<String, Object> pos = new TreeMap<>();
+            pos.put("file", sec.getSource().getName());
+            pos.put("line", (long) sec.getStartLine());
+            pos.put("column", (long) sec.getStartColumn());
+            return nixtruffle.runtime.NixAttrs.fromMap(pos);
+        });
         put(m, "replAdd", 2, a -> attrs(a[0]).update(attrs(a[1])));
         put(m, "replLoad", 1, a -> CliEval.replValue(nixtruffle.util.Json.obj(nixtruffle.util.Json.parse(Bytes.of(bytesIn(a[0]))))));
         put(m, "flakeLock", 1, a -> {

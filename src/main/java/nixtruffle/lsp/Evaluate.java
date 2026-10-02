@@ -1,0 +1,120 @@
+package nixtruffle.lsp;
+
+import com.oracle.truffle.api.source.Source;
+import nixtruffle.NixContext;
+import nixtruffle.parser.Expr;
+import nixtruffle.parser.Expr.*;
+import nixtruffle.parser.Expr.Binding.Assign;
+import nixtruffle.parser.Parser;
+import nixtruffle.runtime.Apply;
+import nixtruffle.runtime.Thunk;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * The language server's evaluation (in the language's context, through
+ * {@code __nixTruffle.lspEval}): an expression as it would be at an offset of a file, in the
+ * scopes around that offset. The file's syntax tree is rebuilt around the expression, keeping what
+ * binds names on the way there ({@code let}, recursive sets, {@code with}, functions), and the
+ * functions are applied to what {@code args} gives for their arguments: a function of
+ * {@code { names, optional }} (formals) or {@code { arg }} (a plain argument), the language
+ * server's guess (nixpkgs' {@code pkgs}, a NixOS configuration's {@code config}, ...).
+ * Everything else in the file is left out, and all of it is lazy.
+ */
+public final class Evaluate {
+    private Evaluate() {}
+
+    /** {@code expression} (source text) in the scope at {@code offset} of {@code text} (byte strings). */
+    public static Object at(String path, String text, int offset, String expression, Object args) {
+        Source source = Source.newBuilder("nix", text, path).build();
+        Expr root = new Parser(source).parseFile();
+        Expr target = new Parser(Source.newBuilder("nix", expression, path).build()).parseFile();
+        List<Expr> binders = new ArrayList<>();
+        collect(root, offset, binders);
+        Expr inner = target;
+        for (int i = binders.size() - 1; i >= 0; i--) inner = rebind(binders.get(i), inner);
+        Expr fn = new Lambda(ARGS, null, inner, 0);
+        NixContext ctx = NixContext.get(null);
+        fn = lenient(text, fn, ctx);
+        Object f = ctx.language.translate(source, path, fn).call();
+        return Thunk.force(Apply.apply(f, args, null));
+    }
+
+    private static final String ARGS = "__lspArgs";
+
+    /**
+     * {@code e} with its undefined variables (a file being edited has some) throwing when used,
+     * rather than failing to translate: through a {@code with} around it all, which is where
+     * names that are bound nowhere else are looked up.
+     */
+    private static Expr lenient(String text, Expr e, NixContext ctx) {
+        nixtruffle.GlobalScope g = ctx.globalScope();
+        java.util.Set<String> globals = new java.util.HashSet<>();
+        for (int i = 0; i < g.size(); i++) globals.add(g.name(i));
+        java.util.Set<String> undefined = new java.util.TreeSet<>();
+        for (Scopes.Use u : Scopes.analyze(text, e, globals).uses) if (u.kind() == Scopes.Kind.UNDEFINED) undefined.add(u.name());
+        if (undefined.isEmpty()) return e;
+        List<Binding> throwing = new ArrayList<>();
+        for (String name : undefined) {
+            throwing.add(new Assign(List.of(AttrKey.of(name)), new App(new Var("throw", 0), List.of(str("undefined variable '" + name + "'")), 0), 0));
+        }
+        return new With(new Attrs(false, throwing, 0), e, 0);
+    }
+
+    /** The nodes that bind names, from {@code e} to the node at {@code offset}. */
+    private static void collect(Expr e, int offset, List<Expr> out) {
+        switch (e) {
+            case Lambda l -> out.add(l);
+            case Let l -> out.add(l);
+            case Attrs a when a.rec() -> out.add(a);
+            case With w -> {
+                if (offset >= w.body().pos()) {
+                    out.add(w);
+                    collect(w.body(), offset, out);
+                } else {
+                    collect(w.env(), offset, out);
+                }
+                return;
+            }
+            default -> {}
+        }
+        Expr in = null;
+        for (Expr c : Scopes.children(e)) if (c.pos() <= offset) in = c;
+        if (in != null) collect(in, offset, out);
+    }
+
+    /** {@code inner} in the scope that {@code binder} makes. */
+    private static Expr rebind(Expr binder, Expr inner) {
+        return switch (binder) {
+            case With w -> new With(w.env(), inner, w.pos());
+            case Let l -> new Let(l.bindings(), inner, l.pos());
+            // A recursive set's names, as a let's (without dynamic ones, which a let can't have).
+            case Attrs a -> new Let(a.bindings().stream().filter(b -> !(b instanceof Assign as && as.path().getFirst().name() == null)).toList(), inner, a.pos());
+            case Lambda l -> new App(new Lambda(l.arg(), l.formals(), inner, l.pos()), List.of(arguments(l)), l.pos());
+            default -> inner;
+        };
+    }
+
+    /** What the function gets: {@code args { names = [...]; optional = [...]; }}, or {@code args { arg = "x"; }}. */
+    private static Expr arguments(Lambda l) {
+        List<Binding> request = new ArrayList<>();
+        if (l.formals() != null) {
+            List<Expr> names = new ArrayList<>();
+            List<Expr> optional = new ArrayList<>();
+            for (Formal f : l.formals().formals()) {
+                names.add(str(f.name()));
+                if (f.fallback() != null) optional.add(str(f.name()));
+            }
+            request.add(new Assign(List.of(AttrKey.of("names")), new ListE(names, 0), 0));
+            request.add(new Assign(List.of(AttrKey.of("optional")), new ListE(optional, 0), 0));
+        } else {
+            request.add(new Assign(List.of(AttrKey.of("arg")), str(l.arg()), 0));
+        }
+        return new App(new Var(ARGS, 0), List.of(new Attrs(false, request, 0)), 0);
+    }
+
+    private static Expr str(String s) {
+        return new Str(List.of(s), 0);
+    }
+}

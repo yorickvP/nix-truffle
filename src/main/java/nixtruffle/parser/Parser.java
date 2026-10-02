@@ -757,7 +757,19 @@ public final class Parser {
     }
 
     private NixException error(String message, int pos) {
-        return new NixException("syntax error, " + message + "\n       at " + location(source, pos), null);
+        return new SyntaxError("syntax error, " + message, location(source, pos), pos);
+    }
+
+    /** A syntax error, with its offset in the source (for the language server). */
+    public static final class SyntaxError extends NixException {
+        public final String detail;
+        public final int offset;
+
+        SyntaxError(String detail, String location, int offset) {
+            super(detail + "\n       at " + location, null);
+            this.detail = detail;
+            this.offset = offset;
+        }
     }
 
     public static String location(Source source, int pos) {
