@@ -451,11 +451,18 @@ LSP client: run `nix-truffle lsp` for files of type `nix`. It knows Nix the way 
   request came; everything else is answered meanwhile. An evaluation is interrupted when it takes
   longer than `evalTimeout` (seconds, default 10) or its request is cancelled.
 
-It works the same in the native executables (`tests/lsp.py` with `TRUFFLE=` the executable).
-They answer from the start, but the community one's serial collector makes the big evaluations
-slower: the NixOS options of seven machines in 7.6 s rather than the JVM's 2.8 s, 4.6 s of it
-collecting. For a language server, which runs for long, the JVM package (or native-oracle, with
-G1) is the better one.
+It works the same in the native executables (`tests/lsp.py` with `TRUFFLE=` the executable),
+which answer from the start (initialize in 0.02 s rather than 0.35), but evaluate big things
+slower. The NixOS options of seven machines (one evaluation thread, as the server has):
+
+| | JVM | native-oracle (G1) | native (serial GC) |
+|---|---|---|---|
+| options of seven machines | 2.8 s | 3.7 s | 7.6 s (4.6 s collecting) |
+| what the dotfiles' eight configurations import | 5.4 s | 9.4 s | 18.4 s |
+| first `pkgs.hel` | 1.1 s | 1.1 s | 2.3 s |
+
+For a language server, which runs for long, the JVM package is the better one; native-oracle
+next.
 
 Settings (`initializationOptions`, or `workspace/didChangeConfiguration`'s `nix-truffle`) are
 expressions in a scope with the workspace's `flake`, its `inputs`, `system` and `upstream` (its
