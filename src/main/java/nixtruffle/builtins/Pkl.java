@@ -22,6 +22,7 @@ import org.pkl.core.EvaluatorBuilder;
 import org.pkl.core.ModuleSchema;
 import org.pkl.core.ModuleSource;
 import org.pkl.core.PClass;
+import org.pkl.core.PModule;
 import org.pkl.core.PObject;
 import org.pkl.core.PType;
 import org.pkl.core.Pair;
@@ -280,6 +281,8 @@ final class Pkl {
             m.forEach((k, x) -> entries.add(NixAttrs.fromMap(new TreeMap<>(Map.of("key", toNix(k, call), "value", toNix(x, call))))));
             return new NixList(entries.toArray());
         }
+        // A module of a Nix value (import("nix:...").value, like a derivation): that value.
+        if (v instanceof PModule m && "nix".equals(m.getModuleUri().getScheme())) return lookUp(call, path(m.getModuleUri()));
         if (v instanceof PObject o) {
             Map<String, Object> props = o.getProperties();
             // A Dynamic object with only elements: a list.
@@ -486,11 +489,14 @@ final class Pkl {
         Object v = lookUp(call, path);
         StringBuilder sb = new StringBuilder();
         if (v instanceof NixAttrs a) {
+            // A derivation's attributes are hidden: it goes back to Nix as itself, not as a copy
+            // of its attributes (which include itself: drv.out.out...).
+            String modifier = Derivations.isDerivation(a) ? "hidden " : "";
             sb.append("hidden value = module\n");
             for (String key : a.keys) {
                 List<String> p = new ArrayList<>(path);
                 p.add(Bytes.toJava(key));
-                sb.append(identifier(Bytes.toJava(key))).append(" = import(").append(literal(uri(p))).append(").value\n");
+                sb.append(modifier).append(identifier(Bytes.toJava(key))).append(" = import(").append(literal(uri(p))).append(").value\n");
             }
         } else if (v instanceof NixList l) {
             sb.append("value: Listing = new {");

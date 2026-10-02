@@ -1,0 +1,32 @@
+/// The arguments of nixpkgs' `stdenv.mkDerivation`: amend this module to write a package.
+/// Packages are Nix values from `import "nix:pkgs"`.
+module derivation
+
+/// A Nix value: a derivation (a package, a source) or a set like a license.
+typealias Nix = Module
+
+pname: String(matches(Regex(#"[A-Za-z0-9+._-]+"#)))
+version: String(!isEmpty)
+src: Nix?
+
+/// Packages to build with: tools that run while building, libraries for the host.
+nativeBuildInputs: Listing<Nix>
+buildInputs: Listing<Nix>
+
+configureFlags: Listing<String>
+makeFlags: Listing<String>
+env: Mapping<String, String>
+
+doCheck: Boolean?
+/// Phases: shell code replacing a phase's default.
+configurePhase: String?
+buildPhase: String?
+installPhase: String?
+
+meta: Meta
+class Meta {
+  description: String(!endsWith("."))?
+  homepage: String(startsWith("https://"))?
+  license: Nix?
+  mainProgram: String?
+}

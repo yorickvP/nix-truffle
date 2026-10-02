@@ -63,6 +63,8 @@ check "output" '"global:\n  scrape_interval: 1min\nscrape_configs:\n- job_name: 
 check "nix: modules and reads" "{ asText = \"x\"; json = \"[1,2]\"; nested = true; path = \"$(NIX_TRUFFLE_DAEMON=0 "$truffle" -E 'builtins.toFile "f" "y"' | tr -d '"')\"; s = \"x\"; sum = 3; }" \
   'builtins.pkl { module = ./reads.pkl; nix = { d = { a = 1; b = [ 1 2 ]; s = "x"; n.deep = true; f = x: x; }; file = builtins.toFile "f" "y"; }; }'
 check "store paths keep their context" "[ \"$(NIX_TRUFFLE_DAEMON=0 "$truffle" -E 'builtins.toFile "f" "y"' | tr -d '"')\" ]" 'builtins.attrNames (builtins.getContext (builtins.pkl { module = ./reads.pkl; nix = { d = { a = 1; b = [ ]; s = ""; n.deep = 1; }; file = builtins.toFile "f" "y"; }; }).path)' --strict
+check "derivations come back as themselves" '[ true true "x" ]' \
+  'let p = derivation { name = "x"; builder = "/bin/sh"; system = "x86_64-linux"; }; r = builtins.pkl { text = "import \"nix:d\" as d\nx = d.p\nxs { d.p; d.p.`out` }\nn = d.p.name"; nix.d.p = p; }; in [ (r.x == p) (builtins.elemAt r.xs 1 == p.out) r.n ]'
 check "a missing nix: attribute" "error: Pkl: I/O error loading module \`nix:d.missing\`." 'builtins.pkl { text = "import \"nix:d.missing\" as m\nx = m.value"; nix.d = { }; }'
 check "pure evaluation" "error: Pkl: access to absolute path '/etc/hostname' is forbidden in pure evaluation mode (use '--impure' to override)" \
   'builtins.pkl { text = "x = read(\"file:///etc/hostname\")"; }' --option pure-eval true
@@ -80,6 +82,8 @@ if [[ -n "${NIXPKGS:-}" ]]; then
     failed=$((failed + 1))
     printf 'FAIL NixOS in Pkl\n  got: %s\n' "$systems"
   fi
+  # examples/pkl/package: a package in Pkl, and one amending it, are the same as in Nix.
+  check "packages in Pkl" 'true' "let pkgs = import <nixpkgs> { }; p = import $root/examples/pkl/package { inherit pkgs; }; in p.hello-quiet.drvPath == (pkgs.stdenv.mkDerivation { pname = \"hello-quiet\"; inherit (pkgs.hello) version src; nativeBuildInputs = [ pkgs.perl ]; doCheck = false; configureFlags = [ \"--disable-nls\" ]; meta = { description = \"A program that produces a familiar, friendly greeting\"; homepage = \"https://www.gnu.org/software/hello/manual/\"; license = pkgs.lib.licenses.gpl3Plus; mainProgram = \"hello\"; }; }).drvPath" -I "nixpkgs=$NIXPKGS"
   printf 'amends "%s"\nservices { openssh { enabel = true } }\n' "$example/nixos.pkl" > typo.pkl
   check "NixOS option typo" 'error: Pkl: Cannot find property `enabel` in object of type `nixos#O_services_openssh`.' 'builtins.pkl { module = ./typo.pkl; }'
 fi

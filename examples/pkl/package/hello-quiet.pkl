@@ -1,0 +1,4 @@
+amends "hello.pkl"
+pname = "hello-quiet"
+doCheck = false
+configureFlags { "--disable-nls" }

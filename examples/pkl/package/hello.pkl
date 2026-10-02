@@ -1,0 +1,14 @@
+amends "derivation.pkl"
+import "nix:pkgs" as pkgs
+
+pname = "hello"
+version = pkgs.hello.version
+src = pkgs.hello.src
+nativeBuildInputs { pkgs.perl }
+doCheck = true
+meta {
+  description = "A program that produces a familiar, friendly greeting"
+  homepage = "https://www.gnu.org/software/hello/manual/"
+  license = pkgs.lib.licenses.gpl3Plus
+  mainProgram = "hello"
+}

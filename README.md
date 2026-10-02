@@ -212,8 +212,11 @@ its Java API) on the JVM. Three directions work (see `examples/pkl`, `tests/pkl.
   a property per attribute, each `import("nix:pkgs.NAME").value`, which Pkl evaluates (and Nix
   with it) only when it is used, so `pkgs.hello.version` evaluates `hello` and nothing else.
   `read("nix:pkgs.hello")` is a value as text: a derivation's output path, JSON for sets and lists.
-  Store paths that come back to Nix keep their string context, so derivations that use them
-  depend on the right derivations.
+  A derivation's attributes are hidden properties (`pkgs.hello.version` reads one), and a `nix:`
+  module that comes back to Nix is the Nix value itself, so `buildInputs { pkgs.openssl }` is a
+  list of derivations. Store paths that come back keep their string context, also within other
+  strings (`"\(pkgs.hello.outPath)/bin/hello"`), so derivations that use them depend on the
+  right derivations.
 
 `builtins.pkl` takes `module` (a path) or `text`, and optionally `amend` (with `module`),
 `expression` (evaluated in the module instead of the whole module), `output`, and `nix`. Values:
@@ -238,6 +241,38 @@ its Java API) on the JVM. Three directions work (see `examples/pkl`, `tests/pkl.
   amending it.
 - Native images leave Pkl out: its language needs a native-image configuration of its own.
   `builtins.pkl` and `.pkl` imports say so there.
+
+### Packages in Pkl
+
+A package can be a Pkl module that amends a schema of `stdenv.mkDerivation`'s arguments, and a
+variant a module that amends that one, as `overrideAttrs` would (`examples/pkl/package`):
+
+```pkl
+amends "derivation.pkl"
+import "nix:pkgs" as pkgs
+
+pname = "hello"
+version = pkgs.hello.version
+src = pkgs.hello.src
+doCheck = true
+meta { mainProgram = "hello"; license = pkgs.lib.licenses.gpl3Plus }
+```
+
+```pkl
+amends "hello.pkl"
+pname = "hello-quiet"
+doCheck = false
+configureFlags { "--disable-nls" }
+```
+
+```nix
+pkgs.stdenv.mkDerivation (builtins.pkl { module = ./hello-quiet.pkl; nix = { inherit pkgs; }; })
+```
+
+Pkl checks the arguments (`nativeBuildInputs { "perl" }`: "Expected value of type `Module`, but
+got type `String`"; a homepage that isn't `https:`), and the derivation is the one the same
+arguments in Nix make. `derivation.pkl` is written by hand: mkDerivation has no option types to
+generate it from.
 
 ### NixOS configurations in Pkl
 
