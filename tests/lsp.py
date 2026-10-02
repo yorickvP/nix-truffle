@@ -412,6 +412,7 @@ let cfg = config.services.nginx; in {
     check("said in hover", evaluated_with(c, "pkgs/foo.nix", "name", 1), "`legacyPackages.x86_64-linux`")
     foo = fl / "pkgs" / "foo.nix"
     c.open(foo.as_uri(), foo.read_text())
+    check("hover on an argument: its value", c.at("textDocument/hover", foo.as_uri(), foo.read_text(), "myHello.name", 2)["contents"]["value"].startswith("`myHello` (argument): package `hello-"), True)
     check("definition of an argument: where its value is", c.at("textDocument/definition", foo.as_uri(), foo.read_text(), "myHello.name", 2)[0]["uri"].endswith("/pkgs/by-name/he/hello/package.nix"), True)
     check("an overlay's prev", "hello" in complete_in(c, "overlay.nix", "prev.hello", "prev.hel", "hel;", 3), True)
     check("home-manager's options", complete_in(c, "dots/main.nix", "homeOnly = true;", "homeO", "O\n", 1), ["homeOnly"])

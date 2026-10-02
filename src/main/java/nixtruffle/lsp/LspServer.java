@@ -524,15 +524,10 @@ public final class LspServer {
         // A function's attribute argument (`{ fetchFromGitHub, ... }:`): where its value comes
         // from (the package set's fetchFromGitHub), else the argument.
         Scopes.Def formal = u != null ? u.def() : defAt(doc, offset);
-        if (formal != null && formal.kind().equals("argument") && !formal.renamable()) {
-            try {
-                Value from = resolver(doc).execute(context.eval("nix", "name: { where = name; }").execute(formal.name()));
-                Object found = from == null || from.isNull() ? null : locations(from, formal.name());
-                if (found != null) return found;
-            } catch (org.graalvm.polyglot.PolyglotException e) {
-                if (e.isInterrupted() || e.isCancelled()) throw e;
-                log("where " + formal.name() + " comes from: " + e.getMessage());
-            }
+        Value from = formalSource(doc, formal);
+        if (from != null) {
+            Object found = locations(from, formal.name());
+            if (found != null) return found;
         }
         if (u != null && u.def() != null) return location(doc.uri, doc, u.def().pos(), u.def().name().length());
         Scopes.Def d = defAt(doc, offset);
@@ -566,6 +561,19 @@ public final class LspServer {
             return env == null ? null : locations(env, name);
         }
         return null;
+    }
+
+    /** For a function's attribute argument: the set its value comes from (the package set, ...), or null. */
+    private Value formalSource(Doc doc, Scopes.Def formal) {
+        if (formal == null || !formal.kind().equals("argument") || formal.renamable()) return null;
+        try {
+            Value from = resolver(doc).execute(context.eval("nix", "name: { where = name; }").execute(formal.name()));
+            return from == null || from.isNull() ? null : from;
+        } catch (org.graalvm.polyglot.PolyglotException e) {
+            if (e.isInterrupted() || e.isCancelled()) throw e;
+            log("where " + formal.name() + " comes from: " + e.getMessage());
+            return null;
+        }
     }
 
     private static Map<String, Object> fileLocation(String file, long line, long column) {
@@ -752,6 +760,13 @@ public final class LspServer {
             Value from = evaluateFrom(doc, at, at, inherited.fromPos());
             String md = from == null ? null : describeMarkdown(from, inherited.name(), "`" + inherited.name() + "` (inherited)");
             if (md != null) return obj("contents", obj("kind", "markdown", "value", Bytes.fromJava(md + footer(doc))), "range", range(doc, at, at + inherited.name().length()));
+        }
+        Scopes.Def formal = u != null ? u.def() : defAt(doc, offset);
+        Value source = formalSource(doc, formal);
+        if (source != null) {
+            int at = u != null ? u.pos() : formal.pos();
+            String md = describeMarkdown(source, formal.name(), "`" + formal.name() + "` (argument)");
+            if (md != null) return obj("contents", obj("kind", "markdown", "value", Bytes.fromJava(md + footer(doc))), "range", range(doc, at, at + formal.name().length()));
         }
         if (u == null) return null;
         if (u.kind() == Scopes.Kind.WITH) {
@@ -1489,15 +1504,17 @@ public final class LspServer {
                       text = d: if builtins.isString d then d else d.text or "";
                       option = t == "set" && (v._type or null) == "option";
                       drv = t == "set" && (v.type or null) == "derivation";
+                      # a function made overridable (fetchFromGitHub): a set with __functor
+                      functor = t == "set" && !drv && v ? __functor;
                     in {
-                      kind = if option then "option" else if drv then "package" else if t == "lambda" then "function" else t;
+                      kind = if option then "option" else if drv then "package" else if t == "lambda" || functor then "function" else t;
                       detail = safe (if option then v.type.description or "option"
                         else if drv then v.name or "derivation"
-                        else if t == "set" then "attribute set"
-                        else if t == "lambda" then
-                          let args = builtins.functionArgs v; in
+                        else if t == "lambda" || functor then
+                          let args = if functor then v.__functionArgs or { } else builtins.functionArgs v; in
                           if args == { } then "function"
                           else "{ " + builtins.concatStringsSep ", " (map (n: if args.${n} then n + " ? ..." else n) (builtins.attrNames args)) + " }: ..."
+                        else if t == "set" then "attribute set"
                         else if builtins.elem t [ "int" "float" "bool" "null" ] then builtins.toJSON v
                         else if t == "string" then builtins.toJSON (builtins.substring 0 80 v)
                         else t);
