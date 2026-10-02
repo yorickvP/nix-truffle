@@ -430,6 +430,10 @@ LSP client: run `nix-truffle lsp` for files of type `nix`. It knows Nix the way 
     file's path among them, `machines/frumar/...`), else one named in its path (home-manager's
     for a path with `home-manager` or `home.nix`), else the first. Configurations are evaluated
     without the check that what is defined is declared, which one being edited often fails;
+  - a package of the flake (a file its `packages.${system}.<name>` or `legacyPackages`', named
+    after its directory or itself, calls): the arguments it is called with, recorded by
+    evaluating that package (a scope of its own, `makeScope` or `callPackage` with arguments,
+    gives arguments nixpkgs hasn't);
   - anything else (packages, overlays, ...): the package set, the flake's
     `legacyPackages.${system}`, else nixpkgs with the flake's overlays, else its `nixpkgs`
     input, else `<nixpkgs>`; names by callPackage's rules (then `python3Packages`'), an

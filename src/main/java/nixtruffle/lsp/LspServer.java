@@ -1263,6 +1263,18 @@ public final class LspServer {
               packagesName = packages.name;
               configurationNames = builtins.mapAttrs (_: builtins.attrNames) configurations;
               flakePath = if flake != null then flake.outPath else null;
+              # The arguments a file's function is called with, evaluating the flake's packages of
+              # these names afresh (another evaluation may have called it already).
+              calls = file: names: __nixTruffle.callsTo file (_:
+                let
+                  fresh = %s;
+                  ps = ((fresh.legacyPackages or { }).${system} or { }) // ((fresh.packages or { }).${system} or { });
+                in builtins.foldl' (acc: n: builtins.seq (if ps ? ${n} then ps.${n} else null) acc) null names);
+              # A resolver that gives the file's function (at pos) the arguments it is called with.
+              withCall = args: pos: base: request:
+                if request ? names && (request.pos or (-1)) == pos then args
+                else if request ? where && args ? ${request.where} then args
+                else base request;
               # The files a configuration imports: listing its options imports all of its modules,
               # in an evaluation of its own (one done before imported them already).
               imports = kind: name: (__nixTruffle.importsDuring (_: builtins.attrNames (unchecked raw.${kind}.${name}).options)).files;
@@ -1306,7 +1318,7 @@ public final class LspServer {
             String flake = rootPath != null && Files.exists(Path.of(rootPath, "flake.nix")) ? "builtins.getFlake " + nixString("path:" + rootPath) : "null";
             String nixpkgs = setting("nixpkgs");
             String configured = nixpkgs == null ? "null" : "{ set = with scope; (" + nixpkgs + "); name = " + nixString(nixpkgs) + "; }";
-            session = context.eval("nix", SESSION.formatted(flake, configured));
+            session = context.eval("nix", SESSION.formatted(flake, configured, flake));
         }
         return session;
     }
@@ -1336,7 +1348,55 @@ public final class LspServer {
             r = session().getMember("resolver").execute(sel.nixos, sel.module);
             resolverFor.put(sel.key, r);
         }
+        if (!sel.module) {
+            Call call = callOf(doc);
+            if (call != null) {
+                usedFor.put(doc.uri, "the arguments `" + call.label + "` calls it with");
+                return session().getMember("withCall").execute(call.args, call.pos, r);
+            }
+        }
         return r;
+    }
+
+    /** The arguments a file's function is called with (in the flake's packages), and where it is. */
+    private record Call(Value args, long pos, String label) {}
+
+    private final Map<String, java.util.Optional<Call>> callsOf = new HashMap<>();
+
+    /**
+     * For a function's file in the workspace's flake: the arguments its function is called
+     * with when the flake's package named after its directory or itself is evaluated, or null.
+     */
+    private Call callOf(Doc doc) {
+        String rel = relative(doc);
+        Expr root = treeOf(doc);
+        if (rel == null || !(root instanceof Expr.Lambda l) || l.formals() == null) return null;
+        java.util.Optional<Call> known = callsOf.get(rel);
+        if (known != null) return known.orElse(null);
+        Call call = null;
+        try {
+            Value flakePath = session().getMember("flakePath");
+            if (!flakePath.isNull()) {
+                Path p = Path.of(rel);
+                String base = p.getFileName().toString().replaceFirst("\\.nix$", "");
+                List<String> names = new ArrayList<>();
+                if (p.getParent() != null) names.add(p.getParent().getFileName().toString());
+                if (!base.equals("default") && !base.equals("package")) names.add(base);
+                long t = System.nanoTime();
+                Value calls = session().getMember("calls").execute(flakePath.asString() + "/" + rel, context.eval("nix", "builtins.fromJSON").execute(Bytes.toJava(Json.write(names.stream().map(n -> (Object) Bytes.fromJava(n)).toList()))));
+                log("the calls of " + rel + ": " + calls.getArraySize() + " in " + (System.nanoTime() - t) / 1_000_000 + " ms");
+                if (calls.getArraySize() > 0) {
+                    String text = doc.root != null ? doc.text : doc.goodText;
+                    long pos = text == null ? 0 : text.substring(0, Math.min(l.pos(), text.length())).getBytes(StandardCharsets.UTF_8).length;
+                    call = new Call(calls.getArrayElement(0), pos, "packages." + session().getMember("scope").getMember("system").asString() + "." + names.getFirst());
+                }
+            }
+        } catch (org.graalvm.polyglot.PolyglotException e) {
+            if (e.isInterrupted() || e.isCancelled()) throw e;
+            log("the calls of " + rel + ": " + e.getMessage());
+        }
+        callsOf.put(rel, java.util.Optional.ofNullable(call));
+        return call;
     }
 
     /**
@@ -1464,6 +1524,7 @@ public final class LspServer {
     private void reload() {
         session = null;
         importsOf = null;
+        callsOf.clear();
         resolverFor.clear();
         usedFor.clear();
         lspEval = null;

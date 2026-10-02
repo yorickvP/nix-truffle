@@ -80,6 +80,19 @@ final class Internals {
             return nixtruffle.lsp.Evaluate.at(nixtruffle.util.Json.str(r.get("file")), nixtruffle.util.Json.str(r.get("text")),
                     ((Number) r.get("offset")).intValue(), r.get("expression") instanceof String e ? e : null, a[1]);
         });
+        put(m, "callsTo", 2, a -> {
+            // [ the arguments the file's function was called with while evaluating f null ]
+            NixContext ctx = NixContext.get(null);
+            nixtruffle.lsp.CallRecorder recorder = new nixtruffle.lsp.CallRecorder(Bytes.fromJava(Bytes.toJava(string(a[0]))));
+            nixtruffle.lsp.CallRecorder outer = ctx.callRecorder;
+            ctx.callRecorder = recorder;
+            try {
+                nixtruffle.runtime.Thunk.force(nixtruffle.runtime.Apply.apply(a[1], nixtruffle.runtime.NixNull.INSTANCE, null));
+            } finally {
+                ctx.callRecorder = outer;
+            }
+            return new nixtruffle.runtime.NixList(recorder.calls.toArray());
+        });
         put(m, "importsDuring", 1, a -> {
             // { value = f null; files = [ what evaluating it imported ]; }
             // On the main thread only (Builtin's MAIN_ONLY): one recording at a time. With parallel

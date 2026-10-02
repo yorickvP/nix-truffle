@@ -149,6 +149,8 @@ public final class Evaluate {
         } else {
             request.add(new Assign(List.of(AttrKey.of("arg")), str(l.arg()), 0));
         }
+        // which function it is (the file's own gets the arguments it was called with, if known)
+        request.add(new Assign(List.of(AttrKey.of("pos")), new Int(l.pos(), 0), 0));
         return new App(new Var(ARGS, 0), List.of(new Attrs(false, request, 0)), 0);
     }
 

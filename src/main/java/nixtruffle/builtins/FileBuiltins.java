@@ -304,6 +304,15 @@ public final class FileBuiltins {
         String file = resolveExprPath(path);
         java.util.Set<String> recorder = ctx.importRecorder;
         if (recorder != null) recorder.add(file);
+        nixtruffle.lsp.CallRecorder calls = ctx.callRecorder;
+        if (calls != null && scope == null && calls.file.equals(file)) {
+            ctx.callRecorder = null;
+            try {
+                return calls.wrap(importPath(pathArg, null, fresh));
+            } finally {
+                ctx.callRecorder = calls;
+            }
+        }
         if (scope != null) {
             NixAttrs s = attrs(scope);
             return parseFile(ctx, file, new HashSet<>(Arrays.asList(s.keys))).call(s);

@@ -368,6 +368,11 @@ let cfg = config.services.nginx; in {
   in {
     overlays.default = final: prev: { myHello = prev.hello; };
     legacyPackages.${system} = import nixpkgs { inherit system; overlays = [ self.overlays.default ]; };
+    # a package called from a scope of its own (makeScope), with an argument nixpkgs hasn't
+    packages.${system}.scoped = (nixpkgs.lib.makeScope self.legacyPackages.${system}.newScope (scope: {
+      special = { a = 1; };
+      scoped = scope.callPackage ./pkgs/scoped/package.nix { };
+    })).scoped;
     nixosConfigurations.alpha = nixpkgs.lib.nixosSystem { inherit system; modules = [ base ./alpha.nix ]; };
     nixosConfigurations.beta = nixpkgs.lib.nixosSystem { inherit system; modules = [ base ./beta.nix ./shared/thing.nix ]; };
     # home-manager's are modules too (as homeManagerConfiguration makes them)
@@ -383,6 +388,8 @@ let cfg = config.services.nginx; in {
     (fl / "beta.nix").write_text(declares % ("beta.only", "Only beta has this."))
     (fl / "shared" / "thing.nix").write_text("{ config, ... }: {\n  beta.only = true;\n}\n")
     (fl / "pkgs" / "foo.nix").write_text("{ stdenv, myHello }:\nmyHello.name\n")
+    (fl / "pkgs" / "scoped").mkdir()
+    (fl / "pkgs" / "scoped" / "package.nix").write_text("{ special, stdenv }:\nstdenv.mkDerivation { name = \"scoped\"; passthru.x = special.a; }\n")
     (fl / "overlay.nix").write_text("final: prev: {\n  x = prev.hello;\n}\n")
     (fl / "dots").mkdir()
     (fl / "dots" / "main.nix").write_text("{ config, pkgs, ... }: {\n  # a comment\n  homeOnly = true;\n}\n")
@@ -414,6 +421,8 @@ let cfg = config.services.nginx; in {
     c.open(foo.as_uri(), foo.read_text())
     check("hover on an argument: its value", c.at("textDocument/hover", foo.as_uri(), foo.read_text(), "myHello.name", 2)["contents"]["value"].startswith("`myHello` (argument): package `hello-"), True)
     check("definition of an argument: where its value is", c.at("textDocument/definition", foo.as_uri(), foo.read_text(), "myHello.name", 2)[0]["uri"].endswith("/pkgs/by-name/he/hello/package.nix"), True)
+    check("the arguments a package is called with", complete_in(c, "pkgs/scoped/package.nix", "special.a", "special.", "special.;", 8), ["a"])
+    check("said in hover", evaluated_with(c, "pkgs/scoped/package.nix", "special.a", 2), "the arguments `packages.x86_64-linux.scoped` calls it with")
     check("an overlay's prev", "hello" in complete_in(c, "overlay.nix", "prev.hello", "prev.hel", "hel;", 3), True)
     check("home-manager's options", complete_in(c, "dots/main.nix", "homeOnly = true;", "homeO", "O\n", 1), ["homeOnly"])
     check("said in hover", evaluated_with(c, "dots/main.nix", "homeOnly", 2), "`homeConfigurations.me` (its `pkgs`)")
