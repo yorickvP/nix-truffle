@@ -361,6 +361,21 @@ let cfg = config.services.nginx; in {
     c.open(module, boolean)
     check("a boolean option's values", labels(c.at("textDocument/completion", module, boolean, "= ;", 2)), ["false", "true"])
     check("options on an empty line of a set", {"allowedTCPPorts", "allowedUDPPorts"} <= set(complete("firewall.allowedTCPPorts = [ 22 ];", "firewall = { enable = true;\n    \n  };", "    \n  };", 4)), True)
+    c.request("shutdown", None)
+    c.notify("exit", None)
+    c = Client()
+    c.request("initialize", {"processId": None, "rootUri": tmp.as_uri(), "capabilities": {"textDocument": {"completion": {"completionItem": {"snippetSupport": True}}}},
+                             "initializationOptions": {"nixpkgs": f"import {nixpkgs} {{ }}", "nixos": nixos}})
+    snippets = {i["label"]: i.get("insertText") for i in (lambda r: r["items"] if isinstance(r, dict) else r)(
+        (lambda t: (c.open(module, t), c.at("textDocument/completion", module, t, "openssh.\n", 8))[1])(mtext.replace("services.openssh.enable = true;", "services.openssh.")))}
+    check("an option's snippet", (snippets["enable"], snippets["ports"], snippets["settings"]), ("enable = ${1|true,false|};", "ports = $0;", "settings = $0;"))
+    enumText = mtext.replace("services.openssh.enable = true;", "services.openssh.settings.PermitRoo")
+    c.open(module, enumText)
+    check("an enum option's snippet", [i.get("insertText") for i in c.at("textDocument/completion", module, enumText, "PermitRoo", 9) if i["label"] == "PermitRootLogin"],
+          ['PermitRootLogin = "${1|yes,without-password,prohibit-password,forced-commands-only,no|}";'])
+    before = mtext.replace("services.openssh.enable = true;", "services.openssh.ena = true;")
+    c.open(module, before)
+    check("no snippet before a value", [i.get("insertText") for i in c.at("textDocument/completion", module, before, "ena =", 3) if i["label"] == "enable"], [None])
     check("options at a module's top", "services" in complete("services.openssh.enable = true;", "servi", "ervi\n", 4), True)
     check("options in a set", complete("firewall.allowedTCPPorts = [ 22 ];", "firewall.allowedTC", "allowedTC", 9), ["allowedTCPPortRanges", "allowedTCPPorts"])
     check("options in a submodule", complete('locations."/".proxyPass = "x";', 'locations."/".proxyP', "proxyP", 6), ["proxyPass"])

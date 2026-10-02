@@ -59,6 +59,8 @@ public final class LspServer {
     /** The workspace's directory, and the client's initializationOptions. */
     private volatile String rootPath;
     private volatile Map<String, Object> initOptions = Map.of();
+    /** Whether the client takes snippets in completion items. */
+    private volatile boolean snippets;
 
     /** The thread that evaluates (all of the fields below are its), and the timeouts' timer. */
     private final java.util.concurrent.ExecutorService worker = java.util.concurrent.Executors.newSingleThreadExecutor(r -> daemon(r, "lsp-eval"));
@@ -353,6 +355,9 @@ public final class LspServer {
                 Object rootUri = params.get("rootUri");
                 if (rootUri instanceof String u) rootPath = Path.of(URI.create(Bytes.toJava(u))).toString();
                 if (params.get("initializationOptions") instanceof Map<?, ?>) initOptions = Json.obj(params.get("initializationOptions"));
+                snippets = params.get("capabilities") instanceof Map<?, ?> caps && caps.get("textDocument") instanceof Map<?, ?> td
+                        && td.get("completion") instanceof Map<?, ?> cm && cm.get("completionItem") instanceof Map<?, ?> ci
+                        && Boolean.TRUE.equals(ci.get("snippetSupport"));
                 yield obj("capabilities", obj(
                         "textDocumentSync", obj("openClose", true, "change", 1L, "save", obj("includeText", false)),
                         "definitionProvider", true,
@@ -874,7 +879,11 @@ public final class LspServer {
         List<Object> values = optionValueItems(doc, start, offset, prefix);
         if (values != null) return values;
         List<String> optionPath = optionPath(doc, start, offset);
-        if (optionPath != null) return optionItems(doc, optionPath, prefix);
+        if (optionPath != null) {
+            int eol = text.indexOf('\n', offset);
+            boolean restOfLineEmpty = text.substring(offset, eol < 0 ? text.length() : eol).isBlank();
+            return optionItems(doc, optionPath, prefix, snippets && restOfLineEmpty);
+        }
         if (start > 0 && text.charAt(start - 1) == '.') {
             // An attribute of what the dotted path before it is, evaluated.
             String expression = pathBefore(text, start - 1);
@@ -1263,19 +1272,63 @@ public final class LspServer {
         }
     }
 
-    private Object optionItems(Doc doc, List<String> path, String prefix) {
+    /**
+     * The options and sets of options under a path. With {@code snippet}, an option is inserted
+     * as {@code name = ...;}, the cursor in its value (a choice of true/false, or of a short
+     * enum's values).
+     */
+    private Object optionItems(Doc doc, List<String> path, String prefix, boolean snippet) {
         List<Object> items = new ArrayList<>();
         Value opts = optionsAt(doc, path);
         if (opts == null || !opts.hasMembers()) return items;
-        for (String n : opts.getMemberKeys()) {
-            if (!n.startsWith(prefix) || n.startsWith("_")) continue;
+        List<String> names = opts.getMemberKeys().stream().filter(n -> n.startsWith(prefix) && !n.startsWith("_")).toList();
+        for (String n : names) {
             Value o = opts.getMember(n);
             boolean option = o.hasMember("_type") && "option".equals(o.getMember("_type").isString() ? o.getMember("_type").asString() : null);
             Map<String, Object> it = obj("label", Bytes.fromJava(n), "kind", option ? 10L : 9L,
                     "data", obj("uri", Bytes.fromJava(doc.uri), "option", path.stream().map(x -> (Object) Bytes.fromJava(x)).toList(), "name", Bytes.fromJava(n)));
+            if (option && snippet) {
+                String value = names.size() <= 200 ? choice(o) : "$0";
+                it.put("insertText", Bytes.fromJava(snippetEscape(n) + " = " + value + ";"));
+                it.put("insertTextFormat", 2L);
+            }
             items.add(it);
         }
         return items;
+    }
+
+    /** A snippet's value for an option: a choice of its type's few values, else the cursor. */
+    private String choice(Value option) {
+        try {
+            Value vs = context.eval("nix", """
+                    o:
+                    let
+                      unwrap = t: if builtins.elem (t.name or "") [ "nullOr" "uniq" "unique" ] then unwrap t.nestedTypes.elemType else t;
+                      t = unwrap o.type;
+                      n = t.name or "";
+                      values = t.functor.payload.values or t.functor.payload or [ ];
+                    in
+                    if n == "bool" then [ "true" "false" ]
+                    else if n == "enum" && builtins.all builtins.isString values && builtins.length values <= 20 then map builtins.toJSON values
+                    else [ ]""").execute(option);
+            if (vs.getArraySize() == 0) return "$0";
+            boolean strings = vs.getArrayElement(0).asString().startsWith("\"");
+            List<String> choices = new ArrayList<>();
+            for (long i = 0; i < vs.getArraySize(); i++) {
+                String v = vs.getArrayElement(i).asString();
+                if (strings) v = Bytes.toJava((String) Json.parse(Bytes.fromJava(v)));
+                choices.add(v.replace("\\", "\\\\").replace(",", "\\,").replace("|", "\\|").replace("$", "\\$").replace("}", "\\}"));
+            }
+            String c = "${1|" + String.join(",", choices) + "|}";
+            return strings ? "\"" + c + "\"" : c;
+        } catch (org.graalvm.polyglot.PolyglotException e) {
+            if (e.isInterrupted() || e.isCancelled()) throw e;
+            return "$0";
+        }
+    }
+
+    private static String snippetEscape(String s) {
+        return s.replace("\\", "\\\\").replace("$", "\\$").replace("}", "\\}");
     }
 
     /** Hover on an option's name in a module: its type, description and default. */
