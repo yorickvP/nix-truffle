@@ -58,6 +58,8 @@
             meta = {
               description = "A Nix evaluator on GraalVM's Truffle";
               mainProgram = "nix-truffle";
+              # LGPL: the files taken from CppNix (see the README)
+              license = with lib.licenses; [ mit lgpl21Plus ];
               platforms = lib.platforms.unix;
             };
           };

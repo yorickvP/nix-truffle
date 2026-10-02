@@ -99,3 +99,10 @@ picks a configuration.
   fetchers and flakes, the source layout
 - [Development](docs/development.md): building, tests (differential against CppNix and Lix,
   nix-pbt), benchmarks
+
+## License
+
+MIT (see [LICENSE](LICENSE)), except for files taken from CppNix, which keep its license,
+LGPL-2.1-or-later: `src/main/resources/nixtruffle/corepkgs/` (`derivation.nix`, `fetchurl.nix`,
+`call-flake.nix`, `imported-drv-to-derivation.nix`) and the builtins' documentation in
+`src/main/resources/nixtruffle/lsp/builtins.json`.
