@@ -59,6 +59,10 @@ public final class LspServer {
     /** The workspace's directory, and the client's initializationOptions. */
     private volatile String rootPath;
     private volatile Map<String, Object> initOptions = Map.of();
+    /** What evaluating a module's definitions found, by document: by option path, so that they move with the text. */
+    private record EvalDiagnostic(List<String> path, String message) {}
+
+    private final Map<String, List<EvalDiagnostic>> evalDiagnostics = new java.util.concurrent.ConcurrentHashMap<>();
     /** Whether the client takes snippets in completion items. */
     private volatile boolean snippets;
 
@@ -226,7 +230,7 @@ public final class LspServer {
             return;
         }
         long setting = initOptions.get("evalTimeout") instanceof Number n ? n.longValue() : 10;
-        long seconds = task.method.equals("warmUp") ? Math.max(setting, 120) : setting;
+        long seconds = task.method.equals("warmUp") || task.method.equals("diagnose") ? Math.max(setting, 120) : setting;
         running = task;
         java.util.concurrent.ScheduledFuture<?> timeout = timer.schedule(() -> interrupt(task, "timed out after " + seconds + " s"), seconds, java.util.concurrent.TimeUnit.SECONDS);
         try {
@@ -274,6 +278,10 @@ public final class LspServer {
             case "textDocument/completion" -> at(task, this::completion);
             case "textDocument/hover" -> at(task, this::hover);
             case "textDocument/definition" -> at(task, this::definition);
+            case "diagnose" -> {
+                diagnose(task.doc);
+                yield null;
+            }
             case "warmUp" -> {
                 importing("");
                 yield null;
@@ -395,6 +403,7 @@ public final class LspServer {
                         || doc != null && (doc.text.contains("mkOption") || doc.text.contains("imports"))) {
                     worker.execute(this::reload);
                 }
+                diagnoseLater(uri);
                 yield null;
             }
             case "shutdown" -> {
@@ -403,7 +412,9 @@ public final class LspServer {
             }
             case "textDocument/didOpen" -> {
                 Map<String, Object> td = Json.obj(params.get("textDocument"));
-                update(Bytes.toJava(Json.str(td.get("uri"))), Bytes.toJava(Json.str(td.get("text"))));
+                String uri = Bytes.toJava(Json.str(td.get("uri")));
+                update(uri, Bytes.toJava(Json.str(td.get("text"))));
+                diagnoseLater(uri);
                 yield null;
             }
             case "textDocument/didChange" -> {
@@ -415,6 +426,7 @@ public final class LspServer {
             case "textDocument/didClose" -> {
                 String uri = Bytes.toJava(Json.str(Json.obj(params.get("textDocument")).get("uri")));
                 docs.remove(uri);
+                evalDiagnostics.remove(uri);
                 notify("textDocument/publishDiagnostics", obj("uri", Bytes.fromJava(uri), "diagnostics", List.of()));
                 yield null;
             }
@@ -476,6 +488,15 @@ public final class LspServer {
                 out.add(diagnostic(doc, at, Math.min(at + 1, doc.text.length()), 1, Bytes.toJava(messages.get(i)), null));
             }
             if (doc.scopes == null) return out;
+        }
+        List<EvalDiagnostic> evaluated = evalDiagnostics.get(doc.uri);
+        if (evaluated != null && doc.root != null) {
+            Map<List<String>, ModuleDefinitions.Definition> defs = new HashMap<>();
+            for (ModuleDefinitions.Definition d : ModuleDefinitions.of(doc.text, doc.root)) defs.putIfAbsent(d.path(), d);
+            for (EvalDiagnostic e : evaluated) {
+                ModuleDefinitions.Definition d = defs.get(e.path());
+                if (d != null) out.add(diagnostic(doc, d.keyStart(), d.keyEnd(), 1, e.message(), null));
+            }
         }
         Set<Scopes.Def> used = new HashSet<>();
         for (Scopes.Use u : doc.scopes.uses) {
@@ -1104,6 +1125,187 @@ public final class LspServer {
         return items.isEmpty() ? null : items;
     }
 
+    // ------------------------------------------------------------ evaluated diagnostics
+
+    /** Diagnoses a module's definitions on the worker (after what is queued, a reload say). */
+    private void diagnoseLater(String uri) {
+        Doc doc = docs.get(uri);
+        if (doc == null || doc.root == null || !moduleLike(doc)) return;
+        Task task = new Task(null, "diagnose", Map.of(), doc);
+        worker.execute(() -> run(task));
+    }
+
+    /**
+     * Evaluates what a module defines, as the module system would: options that don't exist
+     * (and what may have been meant), and values that aren't of their option's type (through
+     * lib.modules.mergeDefinitions). Then publishes them with the rest.
+     */
+    private void diagnose(Doc doc) {
+        List<ModuleDefinitions.Definition> defs = ModuleDefinitions.of(doc.text, doc.root);
+        List<EvalDiagnostic> found = new ArrayList<>();
+        if (!defs.isEmpty()) {
+            Value kinds;
+            try {
+                List<Object> paths = new ArrayList<>();
+                for (ModuleDefinitions.Definition d : defs) paths.add(d.path().stream().map(x -> (Object) Bytes.fromJava(x)).toList());
+                kinds = classify().execute(resolver(doc), Bytes.toJava(Json.write(paths)));
+            } catch (org.graalvm.polyglot.PolyglotException e) {
+                if (e.isInterrupted() || e.isCancelled()) throw e;
+                log("diagnosing: " + e.getMessage());
+                return;
+            }
+            Set<List<String>> missing = new HashSet<>();
+            for (int i = 0; i < defs.size(); i++) {
+                ModuleDefinitions.Definition d = defs.get(i);
+                Value k = kinds.getArrayElement(i);
+                String kind = k.getMember("kind").asString();
+                if (kind.equals("missing")) {
+                    int at = k.getMember("at").asInt();
+                    List<String> prefix = d.path().subList(0, at + 1);
+                    if (!missing.add(prefix)) continue;
+                    List<String> siblings = new ArrayList<>();
+                    Value sv = k.getMember("siblings");
+                    for (long j = 0; j < sv.getArraySize(); j++) siblings.add(sv.getArrayElement(j).asString());
+                    String meant = closest(prefix.getLast(), siblings);
+                    found.add(new EvalDiagnostic(d.path(), "no option `" + optionName(prefix) + "`" + (meant == null ? "" : "; did you mean `" + meant + "`?")));
+                } else if (kind.equals("option")) {
+                    String problem = check(doc, d);
+                    if (problem != null) found.add(new EvalDiagnostic(d.path(), problem));
+                }
+            }
+        }
+        evalDiagnostics.put(doc.uri, found);
+        Doc now = docs.get(doc.uri);
+        if (now != null) notify("textDocument/publishDiagnostics", obj("uri", Bytes.fromJava(now.uri), "diagnostics", diagnostics(now)));
+    }
+
+    /** An option path as Nix writes it: names that aren't identifiers quoted. */
+    private static String optionName(List<String> path) {
+        return String.join(".", path.stream().map(n -> n.matches("[A-Za-z_][A-Za-z0-9_'-]*") ? n : "\"" + n + "\"").toList());
+    }
+
+    /** Why a definition's value doesn't do for its option, or null. */
+    private String check(Doc doc, ModuleDefinitions.Definition d) {
+        try {
+            List<String> parent = d.path().subList(0, d.path().size() - 1);
+            Value opts = optionsAt(doc, parent);
+            if (opts == null || !opts.hasMember(d.path().getLast())) return null;
+            Value value = evaluateFromOrThrow(doc, 0, 0, d.valuePos());
+            Value lib = resolver(doc).execute(context.eval("nix", "{ arg = \"lib\"; }"));
+            checker().execute(lib, opts.getMember(d.path().getLast()), Bytes.toJava(Json.write(d.path().stream().map(x -> (Object) Bytes.fromJava(x)).toList())),
+                    Path.of(URI.create(doc.uri)).toString(), value);
+            return null;
+        } catch (org.graalvm.polyglot.PolyglotException e) {
+            if (e.isInterrupted() || e.isCancelled()) throw e;
+            // Only what the module system says of the definition: other errors are of what the
+            // value reads, in a configuration that may not be the one it's meant for (a mkIf
+            // that's false there, another machine's settings).
+            String message = evaluationMessage(e.getMessage());
+            return message.contains("is not of type") ? message : null;
+        }
+    }
+
+    /** An evaluation error's message, without the locations and the traces after it. */
+    private static String evaluationMessage(String message) {
+        List<String> lines = new ArrayList<>();
+        for (String line : String.valueOf(message).split("\n")) {
+            String l = line.strip();
+            if (l.startsWith("at ") || l.startsWith("… ") || l.startsWith("(stack trace")) break;
+            if (l.startsWith("error: ")) l = l.substring("error: ".length());
+            if (!l.isEmpty()) lines.add(l);
+            if (lines.size() == 6) break;
+        }
+        return String.join("\n", lines);
+    }
+
+    /** The name most like {@code name} (by edit distance, at most a third of it), or null. */
+    private static String closest(String name, List<String> names) {
+        String best = null;
+        int bestDistance = Math.max(1, name.length() / 3) + 1;
+        for (String n : names) {
+            int dist = editDistance(name.toLowerCase(java.util.Locale.ROOT), n.toLowerCase(java.util.Locale.ROOT));
+            if (dist < bestDistance) {
+                bestDistance = dist;
+                best = n;
+            }
+        }
+        return best;
+    }
+
+    private static int editDistance(String a, String b) {
+        int[] prev = new int[b.length() + 1], cur = new int[b.length() + 1];
+        for (int j = 0; j <= b.length(); j++) prev[j] = j;
+        for (int i = 1; i <= a.length(); i++) {
+            cur[0] = i;
+            for (int j = 1; j <= b.length(); j++) {
+                cur[j] = Math.min(Math.min(cur[j - 1], prev[j]) + 1, prev[j - 1] + (a.charAt(i - 1) == b.charAt(j - 1) ? 0 : 1));
+            }
+            int[] t = prev;
+            prev = cur;
+            cur = t;
+        }
+        return prev[b.length()];
+    }
+
+    private Value classify;
+
+    /**
+     * {@code resolver: pathsJSON: [ { kind; ... } ]}: whether each path is an option, a set of
+     * them, in a value (free-form, attrs, a list's), or missing ({@code at}: which name, and the
+     * names there).
+     */
+    private Value classify() {
+        if (classify == null) {
+            classify = context.eval("nix", """
+                    resolver: pathsJSON:
+                    let
+                      isOption = o: builtins.isAttrs o && (o._type or null) == "option";
+                      walk = opts: path: i:
+                        if path == [ ] then { kind = "set"; }
+                        else let n = builtins.head path; in
+                        if !(builtins.isAttrs opts) then { kind = "value"; }
+                        else if opts ? ${n} then
+                          let o = opts.${n}; in
+                          if isOption o then (if builtins.tail path == [ ] then { kind = "option"; } else under o.type (builtins.tail path) (i + 1))
+                          else walk o (builtins.tail path) (i + 1)
+                        else { kind = "missing"; at = i; siblings = builtins.filter (x: builtins.substring 0 1 x != "_") (builtins.attrNames opts); };
+                      under = t: path: i:
+                        let n = t.name or ""; in
+                        if builtins.elem n [ "attrsOf" "lazyAttrsOf" ] then
+                          (if path == [ ] then { kind = "value"; } else under t.nestedTypes.elemType (builtins.tail path) (i + 1))
+                        else if builtins.elem n [ "nullOr" "uniq" "unique" ] then under t.nestedTypes.elemType path i
+                        else if n == "submodule" then
+                          (let r = walk (t.getSubOptions [ ]) path i; in
+                           if r.kind == "missing" && t.nestedTypes ? freeformType then { kind = "value"; } else r)
+                        else { kind = "value"; };
+                      root = resolver { arg = "options"; };
+                    in map (p: walk root p 0) (builtins.fromJSON pathsJSON)
+                    """);
+        }
+        return classify;
+    }
+
+    private Value checker;
+
+    /** {@code lib: option: locJSON: file: value: true}, or the module system's error for the definition. */
+    private Value checker() {
+        if (checker == null) {
+            checker = context.eval("nix", """
+                    lib: option: locJSON: file: value:
+                    let
+                      m = lib.modules.mergeDefinitions (builtins.fromJSON locJSON) option.type [ { inherit file value; } ];
+                      v = m.mergedValue;
+                    in
+                    # a list's elements and a set's names are where the merge checks the elements' types
+                    if !m.isDefined then true
+                    else if builtins.isList v then builtins.foldl' (a: x: builtins.seq x a) true v
+                    else if builtins.isAttrs v && (v.type or null) != "derivation" then builtins.seq (builtins.attrNames v) true
+                    else builtins.seq v true
+                    """);
+        }
+        return checker;
+    }
+
     // ------------------------------------------------------------ NixOS options
 
     /**
@@ -1394,18 +1596,23 @@ public final class LspServer {
      * its scope; the cursor's word is where the text may be completed to parse.
      */
     private Value evaluateFrom(Doc doc, int wordStart, int offset, int fromPos) {
-        Parseable p = parseable(doc, wordStart, offset);
-        if (p == null || fromPos > p.text.length()) return null;
         try {
-            if (lspEval == null) lspEval = context.eval("nix", "__nixTruffle.lspEval");
-            Map<String, Object> request = obj("file", Bytes.fromJava(Path.of(URI.create(doc.uri)).toString()), "text", Bytes.fromJava(p.text),
-                    "offset", (long) p.text.substring(0, fromPos).getBytes(StandardCharsets.UTF_8).length);
-            return lspEval.execute(Json.write(request).getBytes(StandardCharsets.ISO_8859_1), resolver(doc));
+            return evaluateFromOrThrow(doc, wordStart, offset, fromPos);
         } catch (org.graalvm.polyglot.PolyglotException | IllegalArgumentException e) {
             if (e instanceof org.graalvm.polyglot.PolyglotException pe && (pe.isInterrupted() || pe.isCancelled())) throw pe;
             log("evaluating what is inherited from: " + e.getMessage());
             return null;
         }
+    }
+
+    /** {@link #evaluateFrom}, its evaluation's error thrown (or null if the text can't be parsed). */
+    private Value evaluateFromOrThrow(Doc doc, int wordStart, int offset, int fromPos) {
+        Parseable p = parseable(doc, wordStart, offset);
+        if (p == null || fromPos > p.text.length()) return null;
+        if (lspEval == null) lspEval = context.eval("nix", "__nixTruffle.lspEval");
+        Map<String, Object> request = obj("file", Bytes.fromJava(Path.of(URI.create(doc.uri)).toString()), "text", Bytes.fromJava(p.text),
+                "offset", (long) p.text.substring(0, fromPos).getBytes(StandardCharsets.UTF_8).length);
+        return lspEval.execute(Json.write(request).getBytes(StandardCharsets.ISO_8859_1), resolver(doc));
     }
 
     /** At a name in {@code inherit (e) a b c}: where {@code e} starts, else -1. */
@@ -1493,11 +1700,11 @@ public final class LspServer {
               resolver = nixos: module:
                 let
                   pkgs = if module && nixos != null then nixos.pkgs or nixos._module.args.pkgs else packages.set;
-                  # A module gets its configuration's module arguments (modulesPath, NixOS's utils,
-                  # home-manager's osConfig, ...), and a configuration made by hand can say more
-                  # (args).
+                  # A module gets its configuration's module arguments (specialArgs, modulesPath,
+                  # NixOS's utils, home-manager's osConfig, ...), and a configuration made by hand
+                  # can say more (args).
                   special = { inherit pkgs; lib = pkgs.lib; }
-                    // (if module && nixos != null then nixos._module.args or { } else { })
+                    // (if module && nixos != null then nixos._module.specialArgs or { } // nixos._module.args or { } else { })
                     // (if nixos != null then nixos.args or { } // { inherit (nixos) config options; } else { })
                     // (if flake != null then inputs // { self = flake; inherit inputs; } else { });
                   # an overlay's plain arguments (final: prev:, self: super:)
@@ -1743,6 +1950,8 @@ public final class LspServer {
         locate = null;
         optionsHelper = null;
         noArguments = null;
+        classify = null;
+        checker = null;
         Context old = context;
         context = contexts.get();
         old.close(true);

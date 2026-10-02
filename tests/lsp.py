@@ -376,6 +376,17 @@ let cfg = config.services.nginx; in {
     before = mtext.replace("services.openssh.enable = true;", "services.openssh.ena = true;")
     c.open(module, before)
     check("no snippet before a value", [i.get("insertText") for i in c.at("textDocument/completion", module, before, "ena =", 3) if i["label"] == "enable"], [None])
+    # Evaluated diagnostics: options that don't exist, values not of their option's type.
+    dfile = (tmp / "wrong.nix").as_uri()
+    dtext = "{ config, lib, pkgs, ... }: {\n  services.openssh.enabel = true;\n  services.openssh.ports = \"x\";\n  boot.loader.grub.enable = false;\n}\n"
+    c.open(dfile, dtext)
+    deadline = time.time() + 60
+    while time.time() < deadline and not any("no option" in d["message"] for d in c.diagnostics.get(dfile, [])):
+        c.request("textDocument/hover", {"textDocument": {"uri": dfile}, "position": {"line": 0, "character": 0}})
+        time.sleep(0.2)
+    evaluated = sorted((d["range"]["start"]["line"], d["message"].split("\n")[0][:60]) for d in c.diagnostics.get(dfile, []) if d["severity"] == 1)
+    check("evaluated diagnostics", evaluated, [(1, "no option `services.openssh.enabel`; did you mean `enable`?"),
+                                               (2, "A definition for option `services.openssh.ports' is not of t")])
     check("options at a module's top", "services" in complete("services.openssh.enable = true;", "servi", "ervi\n", 4), True)
     check("options in a set", complete("firewall.allowedTCPPorts = [ 22 ];", "firewall.allowedTC", "allowedTC", 9), ["allowedTCPPortRanges", "allowedTCPPorts"])
     check("options in a submodule", complete('locations."/".proxyPass = "x";', 'locations."/".proxyP', "proxyP", 6), ["proxyPass"])

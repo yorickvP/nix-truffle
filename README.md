@@ -453,6 +453,10 @@ LSP client: run `nix-truffle lsp` for files of type `nix`. It knows Nix the way 
   - details of an item, and hover: an option's type, description and default; a package's name,
     description, homepage and licenses; a function's arguments and doc comment (RFC 145
     `/** */`, as nixpkgs' lib has, or `#` lines);
+  - diagnostics of a module's definitions (when it is opened and saved): options that don't
+    exist (`no option services.openssh.enabel; did you mean enable?`), and values that the
+    module system's merge rejects for their option's type, each definition's value evaluated in
+    its scope;
   - go to definition of attributes: a package's `meta.position`, an option's declarations, a
     function's own position, else the attribute's.
 
