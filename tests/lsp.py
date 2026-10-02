@@ -426,7 +426,7 @@ let cfg = config.services.nginx; in {
       special = { a = 1; };
       scoped = scope.callPackage ./pkgs/scoped/package.nix { };
     })).scoped;
-    nixosConfigurations.alpha = nixpkgs.lib.nixosSystem { inherit system; modules = [ base ./alpha.nix ]; };
+    nixosConfigurations.alpha = nixpkgs.lib.nixosSystem { inherit system; modules = [ base ./alpha.nix ./plain.nix ]; };
     nixosConfigurations.beta = nixpkgs.lib.nixosSystem { inherit system; modules = [ base ./beta.nix ./shared/thing.nix ]; };
     # home-manager's are modules too (as homeManagerConfiguration makes them)
     homeConfigurations.me = nixpkgs.lib.evalModules { modules = [ ./dots/main.nix ({ lib, ... }: {
@@ -440,6 +440,7 @@ let cfg = config.services.nginx; in {
     (fl / "alpha.nix").write_text(declares % ("alpha.only", "Only alpha has this."))
     (fl / "beta.nix").write_text(declares % ("beta.only", "Only beta has this."))
     (fl / "shared" / "thing.nix").write_text("{ config, ... }: {\n  beta.only = true;\n}\n")
+    (fl / "plain.nix").write_text("{\n  alpha.only = true;\n}\n")
     (fl / "pkgs" / "foo.nix").write_text("{ stdenv, myHello }:\nmyHello.name\n")
     (fl / "pkgs" / "scoped").mkdir()
     (fl / "pkgs" / "scoped" / "package.nix").write_text("{ special, stdenv }:\nstdenv.mkDerivation { name = \"scoped\"; passthru.x = special.a; }\n")
@@ -493,6 +494,14 @@ let cfg = config.services.nginx; in {
     check("diagnosed when saved", [d["message"] for d in c.diagnostics.get(thing.as_uri(), []) if d["severity"] == 1], ["no option `beta.onyl`; did you mean `only`?"])
     thing.write_text(good)
     c.open(thing.as_uri(), good)
+    plain = fl / "plain.nix"
+    ptext = plain.read_text().replace("alpha.only", "alpha.onyl")
+    c.open(plain.as_uri(), ptext)
+    deadline = time.time() + 60
+    while time.time() < deadline and not any("no option" in d["message"] for d in c.diagnostics.get(plain.as_uri(), [])):
+        c.request("textDocument/hover", {"textDocument": {"uri": plain.as_uri()}, "position": {"line": 0, "character": 0}})
+        time.sleep(0.2)
+    check("a module that is a set", [d["message"] for d in c.diagnostics.get(plain.as_uri(), []) if d["severity"] == 1], ["no option `alpha.onyl`; did you mean `only`?"])
     # A module saved with another option: evaluated again.
     (fl / "beta.nix").write_text(declares % ("beta.other", "Beta's other one."))
     c.notify("textDocument/didSave", {"textDocument": {"uri": (fl / "beta.nix").as_uri()}})

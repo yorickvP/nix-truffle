@@ -1128,10 +1128,29 @@ public final class LspServer {
 
     // ------------------------------------------------------------ evaluated diagnostics
 
+    /** Whether a configuration imports the document (its import index, on the worker). */
+    private boolean importedModule(Doc doc) {
+        String rel = relative(doc);
+        if (rel == null) return false;
+        try {
+            Value names = session().getMember("configurationNames");
+            if (names.getMember("nixos").getArraySize() + names.getMember("home").getArraySize() == 0) return false;
+            return !importing(rel).isEmpty();
+        } catch (org.graalvm.polyglot.PolyglotException e) {
+            if (e.isInterrupted() || e.isCancelled()) throw e;
+            return false;
+        }
+    }
+
+    /** A module: one by its look, or one that a configuration imports (a set, say). */
+    private boolean isModule(Doc doc) {
+        return moduleLike(doc) || importedModule(doc);
+    }
+
     /** Diagnoses a module's definitions on the worker (after what is queued, a reload say). */
     private void diagnoseLater(String uri) {
         Doc doc = docs.get(uri);
-        if (doc == null || doc.root == null || !moduleLike(doc)) return;
+        if (doc == null || !(doc.root instanceof Expr.Lambda || doc.root instanceof Expr.Attrs)) return;
         Task task = new Task(null, "diagnose", Map.of(), doc);
         worker.execute(() -> run(task));
     }
@@ -1142,6 +1161,7 @@ public final class LspServer {
      * lib.modules.mergeDefinitions). Then publishes them with the rest.
      */
     private void diagnose(Doc doc) {
+        if (!isModule(doc)) return;
         List<ModuleDefinitions.Definition> defs = ModuleDefinitions.of(doc.text, doc.root);
         List<EvalDiagnostic> found = new ArrayList<>();
         if (!defs.isEmpty()) {
@@ -1158,7 +1178,7 @@ public final class LspServer {
             // The module's own value (its function applied), once: each definition's value is in it.
             Value module = null;
             try {
-                if (doc.root instanceof Expr.Lambda l) module = evaluateFromOrThrow(doc, 0, 0, l.body().pos());
+                module = evaluateFromOrThrow(doc, 0, 0, doc.root instanceof Expr.Lambda l ? l.body().pos() : doc.root.pos());
             } catch (org.graalvm.polyglot.PolyglotException e) {
                 if (e.isInterrupted() || e.isCancelled()) throw e;
                 log("diagnosing, the module: " + evaluationMessage(e.getMessage()));
@@ -1386,7 +1406,7 @@ public final class LspServer {
             p = parseable(doc, wordStart, offset);
         }
         if (p == null) return null;
-        List<String> around = enclosing(p.root, ps);
+        List<String> around = enclosing(p.root, ps, importedModule(doc));
         if (around == null) return null;
         List<String> path = new ArrayList<>(around);
         path.addAll(typed);
@@ -1448,12 +1468,19 @@ public final class LspServer {
     }
 
     /** The option path of the sets around {@code offset} in a module, or null if it isn't in a module's config. */
-    private static List<String> enclosing(Expr root, int offset) {
-        if (!(root instanceof Expr.Lambda l) || l.formals() == null) return null;
-        boolean module = l.formals().ellipsis() || l.formals().formals().stream().anyMatch(f -> List.of("config", "lib", "pkgs", "options").contains(f.name()));
-        if (!module) return null;
+    private static List<String> enclosing(Expr root, int offset, boolean imported) {
+        Expr e;
+        if (root instanceof Expr.Lambda l && l.formals() != null) {
+            boolean module = imported || l.formals().ellipsis() || l.formals().formals().stream().anyMatch(f -> List.of("config", "lib", "pkgs", "options").contains(f.name()));
+            if (!module) return null;
+            e = l.body();
+        } else if (imported && root instanceof Expr.Attrs) {
+            // a module that is a set (hardware-configuration.nix)
+            e = root;
+        } else {
+            return null;
+        }
         List<String> path = new ArrayList<>();
-        Expr e = l.body();
         while (true) {
             if (e instanceof Expr.Attrs a) {
                 // In the value of the last binding before the offset, or else at this set's level.
@@ -1893,7 +1920,7 @@ public final class LspServer {
             names.put("home", List.of());
         }
         int count = names.get("nixos").size() + names.get("home").size();
-        List<String> importing = count > 1 && rel != null && (module || importsOf != null) ? importing(rel) : List.of();
+        List<String> importing = count > 1 && rel != null ? importing(rel) : List.of();
         if (!importing.isEmpty()) module = true;
         String kind = !importing.isEmpty() ? importing.getFirst().substring(0, importing.getFirst().indexOf(':'))
                 : names.get("nixos").isEmpty() && !names.get("home").isEmpty() || rel != null && (rel.contains("home-manager") || rel.endsWith("home.nix")) && !names.get("home").isEmpty() ? "home"
@@ -1973,7 +2000,8 @@ public final class LspServer {
         Expr root = treeOf(doc);
         if (!(root instanceof Expr.Lambda l) || l.formals() == null) return false;
         List<String> names = l.formals().formals().stream().map(Expr.Formal::name).toList();
-        return names.contains("config") || names.contains("options") || names.contains("modulesPath") || l.formals().ellipsis() && names.contains("pkgs");
+        return names.contains("config") || names.contains("options") || names.contains("modulesPath")
+                || l.formals().ellipsis() && (names.contains("pkgs") || names.contains("lib"));
     }
 
     /**

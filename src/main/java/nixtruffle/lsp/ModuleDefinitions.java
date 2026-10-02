@@ -18,11 +18,11 @@ final class ModuleDefinitions {
     /** A definition: its option path, its names' extent, and its value's start. */
     record Definition(List<String> path, int keyStart, int keyEnd, int valuePos) {}
 
-    /** A module's definitions, or an empty list if {@code root} isn't a module (a function of a set). */
+    /** A module's definitions: of a function of a set's body, or of a set (hardware-configuration.nix). */
     static List<Definition> of(String text, Expr root) {
         List<Definition> out = new ArrayList<>();
-        if (!(root instanceof Lambda l) || l.formals() == null) return out;
-        body(text, l.body(), List.of(), true, out);
+        if (root instanceof Lambda l && l.formals() != null) body(text, l.body(), List.of(), true, out);
+        else if (root instanceof Attrs) body(text, root, List.of(), true, out);
         return out;
     }
 
