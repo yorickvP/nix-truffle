@@ -130,6 +130,12 @@
             nix-truffle > /dev/null
             touch $out
           '';
+          # The language server's scripted sessions (those without nixpkgs: the sandbox has no store to evaluate it in).
+          lsp = pkgs.runCommand "nix-truffle-lsp-check" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+            export HOME=$TMPDIR
+            TRUFFLE=${nix-truffle}/bin/nix-truffle python3 ${./tests/lsp.py}
+            touch $out
+          '';
         });
 
       devShells = forAllSystems (pkgs: {

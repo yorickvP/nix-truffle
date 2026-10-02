@@ -42,7 +42,7 @@ nix build .#native     # a native executable (see below: fast to start, slow on 
 nix build .#native-oracle  # the same with Oracle GraalVM's G1 (Linux; Oracle GraalVM is under
                        # the GraalVM Free Terms and Conditions, unfree in nixpkgs: the flake allows
                        # it for this package)
-nix flake check        # builds the package and runs a few commands
+nix flake check        # builds the package, runs a few commands and the language server's tests
 ```
 
 `nix-truffle` without arguments prints its usage, and `nix-truffle COMMAND --help` a command's:
@@ -718,7 +718,7 @@ thunks in it.
 workers share (cycles, errors, `max-call-depth`) with `eval-cores = 8`, several times each, and
 compares them with CppNix. `tests/repl.sh` drives `nix-truffle repl` (files, flakes, `:l`, `:lf`,
 `:r`). `tests/pkl.sh` tests Pkl from Nix. `tests/lsp.py` (Python 3) drives `nix-truffle lsp`
-(with `NIXPKGS=...`, NixOS options and nixpkgs too). `tests/wasm.sh` tests
+(with `NIXPKGS=...`, NixOS options and nixpkgs too; `nix flake check` runs it without). `tests/wasm.sh` tests
 `builtins.wasm`, and with `PLUGINS`, `WASI` and `NIX_WASM_RUST` set runs nix-wasm-rust's test
 suite too.
 
