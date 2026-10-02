@@ -186,6 +186,8 @@ public final class LspServer {
             if (id != null) respond(id, result == null ? Json.NULL : result, null);
         } catch (Unknown e) {
             if (id != null) respondQuietly(id, null, error(-32601, "unknown method"));
+        } catch (Refused e) {
+            if (id != null) respondQuietly(id, null, error(-32803, e.getMessage()));
         } catch (RuntimeException e) {
             if (id != null) respondQuietly(id, null, error(-32603, String.valueOf(e)));
         } catch (IOException e) {
@@ -337,6 +339,9 @@ public final class LspServer {
                         "textDocumentSync", 1L,
                         "definitionProvider", true,
                         "referencesProvider", true,
+                        "documentHighlightProvider", true,
+                        "documentSymbolProvider", true,
+                        "renameProvider", obj("prepareProvider", true),
                         "hoverProvider", true,
                         "completionProvider", obj("triggerCharacters", List.of("."), "resolveProvider", true)),
                         "serverInfo", obj("name", "nix-truffle"));
@@ -364,6 +369,13 @@ public final class LspServer {
                 yield null;
             }
             case "textDocument/references" -> at(params, this::references);
+            case "textDocument/documentHighlight" -> at(params, this::highlight);
+            case "textDocument/prepareRename" -> at(params, (doc, offset) -> prepareRename(doc, offset));
+            case "textDocument/rename" -> at(params, (doc, offset) -> rename(doc, offset, Bytes.toJava(Json.str(params.get("newName")))));
+            case "textDocument/documentSymbol" -> {
+                Doc doc = docs.get(Bytes.toJava(Json.str(Json.obj(params.get("textDocument")).get("uri"))));
+                yield doc == null || doc.root == null ? List.of() : DocumentSymbols.of(doc.text, doc.root, doc.lines::position);
+            }
             default -> {
                 if (method.startsWith("$/")) yield null;
                 throw new Unknown();
@@ -456,8 +468,117 @@ public final class LspServer {
             for (Scopes.PathRef p : doc.scopes.paths) {
                 if (p.pos() <= offset && offset <= p.pos() + p.text().length()) {
                     Path file = pathFile(doc.uri, p.text());
-                    if (file != null) return obj("uri", Bytes.fromJava(file.toUri().toString()), "range", obj("start", obj("line", 0L, "character", 0L), "end", obj("line", 0L, "character", 0L)));
+                    if (file != null) return fileLocation(file.toString(), 1, 1);
                 }
+            }
+        }
+        // Evaluated: an option's declarations, an attribute's definition, a name from `with`.
+        int start = offset, end = offset;
+        while (start > 0 && isNameChar(doc.text.charAt(start - 1))) start--;
+        while (end < doc.text.length() && isNameChar(doc.text.charAt(end))) end++;
+        if (start == end) return null;
+        String name = doc.text.substring(start, end);
+        List<String> optionPath = optionPath(doc, start, start);
+        if (optionPath != null) {
+            Value opts = optionsAt(doc, optionPath);
+            return opts == null || !opts.hasMember(name) ? null : locations(opts, name);
+        }
+        if (start > 0 && doc.text.charAt(start - 1) == '.') {
+            String parent = pathBefore(doc.text, start - 1);
+            Value p = parent.isEmpty() ? null : evaluate(doc, start, start, parent);
+            return p == null ? null : locations(p, name);
+        }
+        if (u != null && u.kind() == Scopes.Kind.WITH) {
+            Value env = withDefining(doc, start, name);
+            return env == null ? null : locations(env, name);
+        }
+        return null;
+    }
+
+    private static Map<String, Object> fileLocation(String file, long line, long column) {
+        Map<String, Object> pos = obj("line", Math.max(0, line - 1), "character", Math.max(0, column - 1));
+        return obj("uri", Bytes.fromJava(Path.of(file).toUri().toString()), "range", obj("start", pos, "end", pos));
+    }
+
+    /** Where {@code parent.name} is defined: as {@link #locate} says. */
+    private Object locations(Value parent, String name) {
+        try {
+            Value ps = locate().execute(parent, name);
+            List<Object> out = new ArrayList<>();
+            for (long i = 0; i < ps.getArraySize(); i++) {
+                Value p = ps.getArrayElement(i);
+                out.add(fileLocation(p.getMember("file").asString(), p.getMember("line").asLong(), p.getMember("column").asLong()));
+            }
+            return out.isEmpty() ? null : out;
+        } catch (org.graalvm.polyglot.PolyglotException e) {
+            log("locating " + name + ": " + e.getMessage());
+            return null;
+        }
+    }
+
+    private Value locate;
+
+    /**
+     * {@code parent: name: [ { file, line, column } ]}: an option's declarations, a package's
+     * meta.position, a function's own position, else the attribute's.
+     */
+    private Value locate() {
+        if (locate == null) {
+            locate = context.eval("nix", """
+                    parent: name:
+                    let
+                      safe = x: let r = builtins.tryEval x; in if r.success then r.value else null;
+                      v = parent.${name};
+                      t = builtins.typeOf v;
+                      option = t == "set" && (v._type or null) == "option";
+                      drv = t == "set" && (v.type or null) == "derivation";
+                      fileLine = s: let m = builtins.match "(.*):([0-9]+)" s; in
+                        if m == null then { file = s; line = 1; column = 1; }
+                        else { file = builtins.elemAt m 0; line = builtins.fromJSON (builtins.elemAt m 1); column = 1; };
+                      attr = safe (builtins.unsafeGetAttrPos name parent);
+                      declared = safe (v.declarationPositions or null);
+                      found =
+                        if option then
+                          (if declared != null then declared
+                           else map (f: { file = toString f; line = 1; column = 1; }) (v.declarations or [ ]))
+                        else if drv && safe (v.meta.position or null) != null then [ (fileLine v.meta.position) ]
+                        else if t == "lambda" && safe (__nixTruffle.lambdaPos v) != null then [ (__nixTruffle.lambdaPos v) ]
+                        else if attr != null then [ attr ]
+                        else [ ];
+                    in builtins.filter (p: p != null && builtins.isString (p.file or null)) (if found == null then [ ] else found)
+                    """);
+        }
+        return locate;
+    }
+
+    // ------------------------------------------------------------ with
+
+    /** The sets of the {@code with}s around the cursor, innermost first, or null. */
+    private Value withEnvs(Doc doc, int wordStart, int offset) {
+        Parseable p = parseable(doc, wordStart, offset);
+        if (p == null) return null;
+        try {
+            if (lspEval == null) lspEval = context.eval("nix", "__nixTruffle.lspEval");
+            Map<String, Object> request = obj("file", Bytes.fromJava(Path.of(URI.create(doc.uri)).toString()), "text", Bytes.fromJava(p.text),
+                    "offset", (long) p.text.substring(0, p.offset).getBytes(StandardCharsets.UTF_8).length, "withs", true);
+            return lspEval.execute(Json.write(request).getBytes(StandardCharsets.ISO_8859_1), resolver(doc));
+        } catch (org.graalvm.polyglot.PolyglotException | IllegalArgumentException e) {
+            log("with: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /** The innermost {@code with}'s set around the cursor that has {@code name}, or null. */
+    private Value withDefining(Doc doc, int offset, String name) {
+        Value envs = withEnvs(doc, offset, offset);
+        if (envs == null) return null;
+        for (long i = 0; i < envs.getArraySize(); i++) {
+            try {
+                Value env = envs.getArrayElement(i);
+                if (env.hasMember(name)) return env;
+            } catch (org.graalvm.polyglot.PolyglotException e) {
+                if (e.isInterrupted() || e.isCancelled()) return null;
+                log("with: " + e.getMessage());
             }
         }
         return null;
@@ -481,6 +602,60 @@ public final class LspServer {
         }
     }
 
+    /** The definition and the uses of the variable at the offset (written, read). */
+    private Object highlight(Doc doc, int offset) {
+        Scopes.Use u = useAt(doc, offset);
+        Scopes.Def def = u != null ? u.def() : defAt(doc, offset);
+        if (def == null) return null;
+        List<Object> out = new ArrayList<>();
+        out.add(obj("range", range(doc, def.pos(), def.pos() + def.name().length()), "kind", 3L));
+        for (Scopes.Use x : doc.scopes.uses) if (x.def() == def) out.add(obj("range", range(doc, x.pos(), x.pos() + x.name().length()), "kind", 2L));
+        return out;
+    }
+
+    /** What renaming the variable at the offset would change, or why it can't be. */
+    private record Renaming(Scopes.Def def, List<int[]> ranges, String refusal) {}
+
+    private static Renaming renaming(Doc doc, int offset) {
+        Scopes.Use u = useAt(doc, offset);
+        Scopes.Def def = u != null ? u.def() : defAt(doc, offset);
+        if (def == null) return new Renaming(null, null, u != null && u.kind() == Scopes.Kind.WITH ? "it comes from a `with`" : "not a variable");
+        if (!def.renamable()) {
+            return new Renaming(def, null, def.kind().equals("argument") ? "it's an attribute of the function's argument"
+                    : def.kind().equals("rec") ? "it's an attribute of the set" : "it's inherited");
+        }
+        List<int[]> ranges = new ArrayList<>();
+        ranges.add(new int[] {def.pos(), def.pos() + def.name().length()});
+        for (Scopes.Use x : doc.scopes.uses) {
+            if (x.def() != def) continue;
+            if (x.inherited()) return new Renaming(def, null, "it's inherited by `inherit " + def.name() + ";`");
+            ranges.add(new int[] {x.pos(), x.pos() + x.name().length()});
+        }
+        return new Renaming(def, ranges, null);
+    }
+
+    private Object prepareRename(Doc doc, int offset) {
+        Renaming r = renaming(doc, offset);
+        if (r.refusal != null) throw new Refused("can't rename this: " + r.refusal);
+        return obj("range", range(doc, r.def.pos(), r.def.pos() + r.def.name().length()), "placeholder", Bytes.fromJava(r.def.name()));
+    }
+
+    private Object rename(Doc doc, int offset, String newName) {
+        Renaming r = renaming(doc, offset);
+        if (r.refusal != null) throw new Refused("can't rename this: " + r.refusal);
+        if (!newName.matches("[A-Za-z_][A-Za-z0-9_'-]*") || KEYWORDS.contains(newName)) throw new Refused("not a name: " + newName);
+        List<Object> edits = new ArrayList<>();
+        for (int[] range : r.ranges) edits.add(obj("range", range(doc, range[0], range[1]), "newText", Bytes.fromJava(newName)));
+        return obj("changes", obj(Bytes.fromJava(doc.uri), edits));
+    }
+
+    /** A request that can't be done, for the reason in its message (an LSP RequestFailed). */
+    private static final class Refused extends RuntimeException {
+        Refused(String message) {
+            super(message);
+        }
+    }
+
     private Object references(Doc doc, int offset) {
         Scopes.Use u = useAt(doc, offset);
         Scopes.Def def = u != null ? u.def() : defAt(doc, offset);
@@ -498,6 +673,13 @@ public final class LspServer {
         if (attr != null) return attr;
         Scopes.Use u = useAt(doc, offset);
         if (u == null) return null;
+        if (u.kind() == Scopes.Kind.WITH) {
+            Value env = withDefining(doc, u.pos(), u.name());
+            if (env != null) {
+                Object md = describeMarkdown(env, u.name(), "`" + u.name() + "` (from `with`)");
+                if (md != null) return obj("contents", obj("kind", "markdown", "value", Bytes.fromJava((String) md)), "range", range(doc, u.pos(), u.pos() + u.name().length()));
+            }
+        }
         String text = switch (u.kind()) {
             case LOCAL -> "`" + u.name() + "`: " + (u.def().kind().equals("argument") ? "function argument" : u.def().kind().equals("rec") ? "attribute of a recursive set" : "let binding")
                     + ", line " + (doc.lines.line(u.def().pos()) + 1);
@@ -519,16 +701,21 @@ public final class LspServer {
         if (parent.isEmpty()) return null;
         Value p = evaluate(doc, start, start, parent);
         if (p == null) return null;
+        String name = text.substring(start, end);
+        Object md = describeMarkdown(p, name, "`" + parent + "." + name + "`");
+        return md == null ? null : obj("contents", obj("kind", "markdown", "value", Bytes.fromJava((String) md)), "range", range(doc, start, end));
+    }
+
+    /** Hover markdown for {@code parent.name}: what it is, and its documentation; or null. */
+    private String describeMarkdown(Value parent, String name, String title) {
         try {
-            String name = text.substring(start, end);
-            Value d = describe().execute(p, name);
-            String md = "`" + parent + "." + name + "`: " + d.getMember("kind").asString()
+            Value d = describe().execute(parent, name);
+            String md = title + ": " + d.getMember("kind").asString()
                     + (d.getMember("detail").isNull() ? "" : " `" + d.getMember("detail").asString() + "`");
             String docs = documentation(d);
-            if (!docs.isEmpty()) md += "\n\n" + docs;
-            return obj("contents", obj("kind", "markdown", "value", Bytes.fromJava(md)), "range", range(doc, start, end));
+            return docs.isEmpty() ? md : md + "\n\n" + docs;
         } catch (org.graalvm.polyglot.PolyglotException e) {
-            log("hover " + parent + ": " + e.getMessage());
+            log("describing " + name + ": " + e.getMessage());
             return null;
         }
     }
@@ -575,7 +762,30 @@ public final class LspServer {
             if (g.startsWith(prefix) && (!g.startsWith("__") || prefix.startsWith("_")) && seen.add(g)) items.add(item(g, g.equals("builtins") ? 9 : 3, "built in"));
         }
         for (String k : KEYWORDS) if (k.startsWith(prefix)) items.add(item(k, 14, "keyword"));
-        return items;
+        // From the `with`s around (after what's in scope, which wins over them): `with pkgs; [ hel`.
+        boolean incomplete = false;
+        if (scope != null && scope.with()) {
+            Value envs = withEnvs(doc, start, offset);
+            for (long i = 0; envs != null && i < envs.getArraySize() && !incomplete; i++) {
+                try {
+                    Value env = envs.getArrayElement(i);
+                    if (!env.hasMembers()) continue;
+                    for (String n : env.getMemberKeys()) {
+                        if (!n.startsWith(prefix) || !seen.add(n)) continue;
+                        if (items.size() >= 500) {
+                            incomplete = true;
+                            break;
+                        }
+                        items.add(obj("label", Bytes.fromJava(n), "kind", 5L, "detail", "with",
+                                "data", obj("uri", Bytes.fromJava(doc.uri), "offset", (long) start, "with", i, "name", Bytes.fromJava(n))));
+                    }
+                } catch (org.graalvm.polyglot.PolyglotException e) {
+                    if (e.isInterrupted() || e.isCancelled()) break;
+                    log("with: " + e.getMessage());
+                }
+            }
+        }
+        return incomplete ? obj("isIncomplete", true, "items", items) : items;
     }
 
     /** The scope at an offset (see {@link #parseable}). */
@@ -899,7 +1109,19 @@ public final class LspServer {
                         else if t == "string" then builtins.toJSON (builtins.substring 0 80 v)
                         else t);
                       doc = safe (if option then text (v.description or "")
-                        else if drv then v.meta.description or ""
+                        else if drv then
+                          let
+                            m = v.meta or { };
+                            licenses = map (l: l.spdxId or l.shortName or "?") (if builtins.isList (m.license or [ ]) then m.license or [ ] else [ m.license ]);
+                            links = builtins.filter (x: x != "") [
+                              (if m ? homepage then "[homepage](" + toString m.homepage + ")" else "")
+                              (if licenses != [ ] then "license: " + builtins.concatStringsSep ", " licenses else "")
+                            ];
+                          in builtins.concatStringsSep "\n\n" (builtins.filter (x: x != "") [
+                            (m.description or "")
+                            (m.longDescription or "")
+                            (builtins.concatStringsSep " · " links)
+                          ])
                         else "");
                       default = if option then safe (if v ? defaultText then text v.defaultText else builtins.toJSON v.default) else null;
                       # a function's own position, where its doc comment is (lib's are inherited
@@ -920,7 +1142,11 @@ public final class LspServer {
         Doc doc = docs.get(Bytes.toJava(Json.str(data.get("uri"))));
         if (doc == null) return item;
         Value parent;
-        if (data.get("option") instanceof List<?> l) {
+        if (data.get("with") instanceof Number w) {
+            int offset = (int) Math.min(((Number) data.get("offset")).longValue(), doc.text.length());
+            Value envs = withEnvs(doc, offset, offset);
+            parent = envs == null || w.longValue() >= envs.getArraySize() ? null : envs.getArrayElement(w.longValue());
+        } else if (data.get("option") instanceof List<?> l) {
             parent = optionsAt(doc, l.stream().map(x -> Bytes.toJava((String) x)).toList());
         } else {
             int offset = (int) Math.min(((Number) data.get("offset")).longValue(), doc.text.length());

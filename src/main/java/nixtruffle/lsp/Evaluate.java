@@ -32,6 +32,29 @@ public final class Evaluate {
         Expr target = new Parser(Source.newBuilder("nix", expression, path).build()).parseFile();
         List<Expr> binders = new ArrayList<>();
         collect(root, offset, binders);
+        return in(source, path, text, binders, target, args);
+    }
+
+    /**
+     * The sets of the {@code with}s around {@code offset}, innermost first: each {@code with}'s
+     * expression in the scope it is in (lazily: a list of thunks).
+     */
+    public static Object withs(String path, String text, int offset, Object args) {
+        Source source = Source.newBuilder("nix", text, path).build();
+        Expr root = new Parser(source).parseFile();
+        List<Expr> binders = new ArrayList<>();
+        collect(root, offset, binders);
+        List<Object> envs = new ArrayList<>();
+        for (int i = binders.size() - 1; i >= 0; i--) {
+            if (!(binders.get(i) instanceof With w)) continue;
+            List<Expr> outside = binders.subList(0, i);
+            envs.add(Apply.lazy(new nixtruffle.runtime.Builtin("withEnv", 1, a -> in(source, path, text, outside, w.env(), args)), nixtruffle.runtime.NixNull.INSTANCE));
+        }
+        return new nixtruffle.runtime.NixList(envs.toArray());
+    }
+
+    /** {@code target} inside the scopes of {@code binders} (outermost first), applied to {@code args}. */
+    private static Object in(Source source, String path, String text, List<Expr> binders, Expr target, Object args) {
         Expr inner = target;
         for (int i = binders.size() - 1; i >= 0; i--) inner = rebind(binders.get(i), inner);
         Expr fn = new Lambda(ARGS, null, inner, 0);

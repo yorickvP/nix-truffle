@@ -73,6 +73,10 @@ final class Internals {
         });
         put(m, "lspEval", 2, a -> {
             Map<String, Object> r = nixtruffle.util.Json.obj(nixtruffle.util.Json.parse(Bytes.of(bytesIn(a[0]))));
+            if (Boolean.TRUE.equals(r.get("withs"))) {
+                return nixtruffle.lsp.Evaluate.withs(nixtruffle.util.Json.str(r.get("file")), nixtruffle.util.Json.str(r.get("text")),
+                        ((Number) r.get("offset")).intValue(), a[1]);
+            }
             return nixtruffle.lsp.Evaluate.at(nixtruffle.util.Json.str(r.get("file")), nixtruffle.util.Json.str(r.get("text")),
                     ((Number) r.get("offset")).intValue(), nixtruffle.util.Json.str(r.get("expression")), a[1]);
         });

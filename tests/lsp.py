@@ -160,6 +160,42 @@ check("hover on an attribute", c.at("textDocument/hover", luri, ltext, "a s.inc"
 check("hover on a function, with its doc comment", c.at("textDocument/hover", luri, ltext, "inc s.nested", 0)["contents"]["value"], "`s.inc`: function `function`\n\nAdds one.")
 check("hover on a nested attribute", c.at("textDocument/hover", luri, ltext, "b ]", 0)["contents"]["value"], '`s.nested.b`: string `"x"`')
 
+# `with`: completion, hover, definition.
+wfile = tmp / "with.nix"
+wtext = """let
+  s = { alpha = 1; beta = x: x; };
+in with s; [ alpha beta ]
+"""
+wfile.write_text(wtext)
+wuri = wfile.as_uri()
+partial = wtext.replace("[ alpha beta ]", "[ al beta ]")
+c.open(wuri, partial)
+check("completion from with", "alpha" in labels(c.at("textDocument/completion", wuri, partial, "al beta", 2)), True)
+c.open(wuri, wtext)
+check("hover from with", c.at("textDocument/hover", wuri, wtext, "alpha beta ]")["contents"]["value"], "`alpha` (from `with`): int `1`")
+check("definition from with", [r["range"]["start"]["line"] for r in c.at("textDocument/definition", wuri, wtext, "alpha beta ]")], [1])
+check("definition of an attribute (a function)", [(r["uri"], r["range"]["start"]["line"]) for r in c.at("textDocument/definition", luri, ltext, "inc s.nested", 0)], [(luri, 2)])
+
+# Outline, highlight, rename.
+c.open(main, text)
+symbols = c.request("textDocument/documentSymbol", {"textDocument": {"uri": main}})
+check("symbols", [(x["name"], x["kind"]) for x in symbols], [("foo", 13), ("unused", 16), ("lib", 13), ("a", 8), ("b", 8), ("c", 8), ("d", 8), ("e", 8)])
+check("highlight", [(h["range"]["start"]["line"], h["kind"]) for h in c.at("textDocument/documentHighlight", main, text, "foo +")], [(2, 3), (7, 2)])
+edit = c.request("textDocument/rename", {"textDocument": {"uri": main}, "position": {"line": 7, "character": 7}, "newName": "bar"})
+check("rename", sorted((e["range"]["start"]["line"], e["range"]["start"]["character"], e["newText"]) for e in edit["changes"][main]), [(2, 2, "bar"), (7, 6, "bar")])
+
+
+def refused(marker, delta=0):
+    try:
+        c.at("textDocument/prepareRename", main, text, marker, delta)
+        return None
+    except RuntimeError as e:
+        return e.args[0]["message"]
+
+
+check("no renaming a formal", refused("pkgs,"), "can't rename this: it's an attribute of the function's argument")
+check("no renaming what's inherited", refused("lib;"), "can't rename this: it's inherited")
+
 c.request("shutdown", None)
 c.notify("exit", None)
 check("exit", c.proc.wait(timeout=30), 0)
@@ -250,6 +286,12 @@ let cfg = config.services.nginx; in {
     items = c.at("textDocument/completion", module, mtext.replace("pkgs.hello ]", "pkgs.hello ]"), "ello ]", 4)
     hello = [i for i in (items["items"] if isinstance(items, dict) else items) if i["label"] == "hello"][0]
     check("resolve a package", c.request("completionItem/resolve", hello)["detail"].startswith("hello-"), True)
+    check("hover on a package", "[homepage](https://www.gnu.org/software/hello/manual/)" in c.at("textDocument/hover", module, mtext, "hello ]", 2)["contents"]["value"], True)
+    check("definition of a package", c.at("textDocument/definition", module, mtext, "hello ]", 2)[0]["uri"].endswith("/pkgs/by-name/he/hello/package.nix"), True)
+    check("definition of an option", c.at("textDocument/definition", module, mtext, "enable = true", 2)[0]["uri"].endswith("/nixos/modules/services/networking/ssh/sshd.nix"), True)
+    wpkgs = mtext.replace("[ pkgs.hello ]", "with pkgs; [ hel ]")
+    c.open(module, wpkgs)
+    check("completion from with pkgs", "hello" in labels(c.at("textDocument/completion", module, wpkgs, "hel ]", 3)), True)
     c.request("shutdown", None)
     c.notify("exit", None)
 

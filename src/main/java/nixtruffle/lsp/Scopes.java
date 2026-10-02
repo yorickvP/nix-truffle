@@ -21,13 +21,17 @@ import java.util.Set;
  * source order, the last one that starts before it.
  */
 public final class Scopes {
-    /** Where a name is defined: its offset, and what defines it ("let", "argument", ...). */
-    public record Def(String name, int pos, String kind) {}
+    /**
+     * Where a name is defined: its offset, what defines it ("let", "argument", "rec"), and whether
+     * renaming it changes nothing else (not a set's attribute, nor a function's attribute
+     * argument, nor an inherited name).
+     */
+    public record Def(String name, int pos, String kind, boolean renamable) {}
 
     public enum Kind { LOCAL, GLOBAL, WITH, UNDEFINED }
 
-    /** A variable, and what it resolves to ({@code def} for {@link Kind#LOCAL}). */
-    public record Use(String name, int pos, Kind kind, Def def) {}
+    /** A variable, and what it resolves to ({@code def} for {@link Kind#LOCAL}); {@code inherited}: in {@code inherit x;}. */
+    public record Use(String name, int pos, Kind kind, Def def, boolean inherited) {}
 
     /** A path literal (for "go to definition": the file). */
     public record PathRef(String text, int pos) {}
@@ -37,6 +41,7 @@ public final class Scopes {
 
     private final String src;
     private final Set<String> globals;
+    private boolean inheriting;
     public final List<Use> uses = new ArrayList<>();
     public final List<Def> defs = new ArrayList<>();
     public final List<PathRef> paths = new ArrayList<>();
@@ -78,7 +83,7 @@ public final class Scopes {
                         : globals.contains(v.name()) ? Kind.GLOBAL
                         : env != null && env.inWith() ? Kind.WITH
                         : Kind.UNDEFINED;
-                uses.add(new Use(v.name(), v.pos(), kind, d));
+                uses.add(new Use(v.name(), v.pos(), kind, d, inheriting));
             }
             case PathLit p -> paths.add(new PathRef(p.text(), p.pos()));
             case PathInterp p -> {
@@ -168,7 +173,9 @@ public final class Scopes {
                     if (in.from() != null) {
                         walk(in.from(), inner);
                     } else {
+                        inheriting = true;
                         for (int i = 0; i < in.names().size(); i++) walk(new Var(in.names().get(i), in.namePos().get(i)), outer);
+                        inheriting = false;
                     }
                 }
             }
@@ -181,10 +188,10 @@ public final class Scopes {
             switch (b) {
                 case Assign a -> {
                     String name = a.path().getFirst().name();
-                    if (name != null) names.putIfAbsent(name, def(name, a.pos(), kind));
+                    if (name != null) names.putIfAbsent(name, def(name, a.pos(), kind, kind.equals("let")));
                 }
                 case Inherit in -> {
-                    for (int i = 0; i < in.names().size(); i++) names.putIfAbsent(in.names().get(i), def(in.names().get(i), in.namePos().get(i), kind));
+                    for (int i = 0; i < in.names().size(); i++) names.putIfAbsent(in.names().get(i), def(in.names().get(i), in.namePos().get(i), kind, false));
                 }
             }
         }
@@ -194,18 +201,18 @@ public final class Scopes {
     private Map<String, Def> lambdaNames(Lambda l) {
         Map<String, Def> names = new LinkedHashMap<>();
         if (l.formals() != null) {
-            for (Formal f : l.formals().formals()) names.put(f.name(), def(f.name(), f.pos(), "argument"));
+            for (Formal f : l.formals().formals()) names.put(f.name(), def(f.name(), f.pos(), "argument", false));
         }
         if (l.arg() != null) {
             // `x: ...` and `x @ { ... }: ...` start with the name; `{ ... } @ x: ...` ends with it.
             int pos = src.startsWith(l.arg(), l.pos()) ? l.pos() : src.lastIndexOf(l.arg(), l.body().pos());
-            names.put(l.arg(), def(l.arg(), pos, "argument"));
+            names.put(l.arg(), def(l.arg(), pos, "argument", true));
         }
         return names;
     }
 
-    private Def def(String name, int pos, String kind) {
-        Def d = new Def(name, pos, kind);
+    private Def def(String name, int pos, String kind, boolean renamable) {
+        Def d = new Def(name, pos, kind, renamable);
         defs.add(d);
         return d;
     }
