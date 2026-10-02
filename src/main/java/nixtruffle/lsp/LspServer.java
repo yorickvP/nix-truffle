@@ -1307,7 +1307,7 @@ public final class LspServer {
                         let n = t.name or ""; in
                         if builtins.elem n [ "attrsOf" "lazyAttrsOf" ] then
                           (if path == [ ] then { kind = "value"; } else under t.nestedTypes.elemType (builtins.tail path) (i + 1))
-                        else if builtins.elem n [ "nullOr" "uniq" "unique" ] then under t.nestedTypes.elemType path i
+                        else if builtins.elem n [ "nullOr" "uniq" "unique" "listOf" ] then under t.nestedTypes.elemType path i
                         else if n == "submodule" then
                           (let r = walk (t.getSubOptions [ ]) path i; in
                            if r.kind == "missing" && t.nestedTypes ? freeformType then { kind = "value"; } else r)
@@ -1527,7 +1527,7 @@ public final class LspServer {
                       under = t: path:
                         let n = t.name or ""; in
                         if builtins.elem n [ "attrsOf" "lazyAttrsOf" ] then (if path == [ ] then null else under t.nestedTypes.elemType (builtins.tail path))
-                        else if builtins.elem n [ "nullOr" "uniq" "unique" ] then under t.nestedTypes.elemType path
+                        else if builtins.elem n [ "nullOr" "uniq" "unique" "listOf" ] then under t.nestedTypes.elemType path
                         else if n == "submodule" then at (t.getSubOptions [ ]) path
                         else null;
                     in at (resolver { arg = "options"; }) path

@@ -378,7 +378,7 @@ let cfg = config.services.nginx; in {
     check("no snippet before a value", [i.get("insertText") for i in c.at("textDocument/completion", module, before, "ena =", 3) if i["label"] == "enable"], [None])
     # Evaluated diagnostics: options that don't exist, values not of their option's type.
     dfile = (tmp / "wrong.nix").as_uri()
-    dtext = "{ config, lib, pkgs, ... }: {\n  services.openssh.enabel = true;\n  services.openssh.ports = \"x\";\n  boot.loader.grub.enable = false;\n}\n"
+    dtext = "{ config, lib, pkgs, ... }: {\n  services.openssh.enabel = true;\n  services.openssh.ports = \"x\";\n  boot.loader.grub.enable = false;\n  swapDevices = [ { sise = 1; } ];\n}\n"
     c.open(dfile, dtext)
     deadline = time.time() + 60
     while time.time() < deadline and not any("no option" in d["message"] for d in c.diagnostics.get(dfile, [])):
@@ -386,7 +386,8 @@ let cfg = config.services.nginx; in {
         time.sleep(0.2)
     evaluated = sorted((d["range"]["start"]["line"], d["message"].split("\n")[0][:60]) for d in c.diagnostics.get(dfile, []) if d["severity"] == 1)
     check("evaluated diagnostics", evaluated, [(1, "no option `services.openssh.enabel`; did you mean `enable`?"),
-                                               (2, "A definition for option `services.openssh.ports' is not of t")])
+                                               (2, "A definition for option `services.openssh.ports' is not of t"),
+                                               (4, "no option `swapDevices.sise`; did you mean `size`?")])
     check("options at a module's top", "services" in complete("services.openssh.enable = true;", "servi", "ervi\n", 4), True)
     check("options in a set", complete("firewall.allowedTCPPorts = [ 22 ];", "firewall.allowedTC", "allowedTC", 9), ["allowedTCPPortRanges", "allowedTCPPorts"])
     check("options in a submodule", complete('locations."/".proxyPass = "x";', 'locations."/".proxyP', "proxyP", 6), ["proxyPass"])
@@ -399,6 +400,9 @@ let cfg = config.services.nginx; in {
     nodefault = mtext.replace("services.openssh.enable = true;", 'fileSystems."/".fsType = "zfs";')
     c.open(module, nodefault)
     check("hover on an option without a default", c.at("textDocument/hover", module, nodefault, "fsType", 2)["contents"]["value"].startswith('`fileSystems."/".fsType`: option'), True)
+    swap = mtext.replace("services.openssh.enable = true;", 'swapDevices = [ { device = "/swap"; sise = 1; } ];')
+    c.open(module, swap)
+    check("hover in a list of submodules", c.at("textDocument/hover", module, swap, "device =", 2)["contents"]["value"].startswith("`swapDevices.device`: option"), True)
     c.open(module, mtext)
     check("hover on lib, with its doc comment", "Return a singleton list or an empty list" in c.at("textDocument/hover", module, mtext, "optional true", 2)["contents"]["value"], True)
     items = c.at("textDocument/completion", module, mtext.replace("pkgs.hello ]", "pkgs.hello ]"), "ello ]", 4)

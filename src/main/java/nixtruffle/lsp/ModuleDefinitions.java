@@ -59,7 +59,13 @@ final class ModuleDefinitions {
                         }
                     }
                     out.add(new Definition(List.copyOf(p), as.pos(), keyEnd(text, as), as.value().pos()));
-                    body(text, as.value(), p, false, out);
+                    if (as.value() instanceof ListE l) {
+                        // a list of submodules' values (swapDevices = [ { device = ...; } ]): names
+                        // in them are the submodule's options, as a list's elements have none
+                        for (Expr item : l.items()) if (item instanceof Attrs) body(text, item, p, false, out);
+                    } else {
+                        body(text, as.value(), p, false, out);
+                    }
                 }
             }
             default -> {}
