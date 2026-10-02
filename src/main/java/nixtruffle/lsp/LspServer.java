@@ -903,7 +903,15 @@ public final class LspServer {
         if (b == 0 || text.charAt(b - 1) != '{' && text.charAt(b - 1) != ';') return null;
         List<String> typed = components(text.substring(ps, wordStart));
         if (typed == null) return null;
-        Parseable p = parseable(doc, wordStart, offset);
+        // A binding where the cursor is, so that a set's empty line (after `enable = true;`) is
+        // where a name goes, not in the value before it.
+        Parseable p;
+        String patched = text.substring(0, wordStart) + "x = null;" + text.substring(offset);
+        try {
+            p = new Parseable(patched, parse(doc.uri, patched), wordStart);
+        } catch (Parser.SyntaxError e) {
+            p = parseable(doc, wordStart, offset);
+        }
         if (p == null) return null;
         List<String> around = enclosing(p.root, ps);
         if (around == null) return null;

@@ -307,6 +307,7 @@ let cfg = config.services.nginx; in {
         return labels(r)
 
     check("options", complete("services.openssh.enable = true;", "services.ngi", "ngi\n", 3), ["nginx", "ngircd"])
+    check("options on an empty line of a set", {"allowedTCPPorts", "allowedUDPPorts"} <= set(complete("firewall.allowedTCPPorts = [ 22 ];", "firewall = { enable = true;\n    \n  };", "    \n  };", 4)), True)
     check("options at a module's top", "services" in complete("services.openssh.enable = true;", "servi", "ervi\n", 4), True)
     check("options in a set", complete("firewall.allowedTCPPorts = [ 22 ];", "firewall.allowedTC", "allowedTC", 9), ["allowedTCPPortRanges", "allowedTCPPorts"])
     check("options in a submodule", complete('locations."/".proxyPass = "x";', 'locations."/".proxyP', "proxyP", 6), ["proxyPass"])
