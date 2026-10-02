@@ -223,7 +223,8 @@ public final class LspServer {
             respondQuietly(task.id, null, error(-32800, "cancelled"));
             return;
         }
-        long seconds = initOptions.get("evalTimeout") instanceof Number n ? n.longValue() : 10;
+        long setting = initOptions.get("evalTimeout") instanceof Number n ? n.longValue() : 10;
+        long seconds = task.method.equals("warmUp") ? Math.max(setting, 120) : setting;
         running = task;
         java.util.concurrent.ScheduledFuture<?> timeout = timer.schedule(() -> interrupt(task, "timed out after " + seconds + " s"), seconds, java.util.concurrent.TimeUnit.SECONDS);
         try {
@@ -271,6 +272,10 @@ public final class LspServer {
             case "textDocument/completion" -> at(task, this::completion);
             case "textDocument/hover" -> at(task, this::hover);
             case "textDocument/definition" -> at(task, this::definition);
+            case "warmUp" -> {
+                importing("");
+                yield null;
+            }
             default -> throw new Unknown();
         };
     }
@@ -359,7 +364,15 @@ public final class LspServer {
                         "completionProvider", obj("triggerCharacters", List.of("."), "resolveProvider", true)),
                         "serverInfo", obj("name", "nix-truffle"));
             }
-            case "initialized", "$/setTrace" -> null;
+            case "initialized" -> {
+                // What the configurations import, ahead of the first request that needs it.
+                if (rootPath != null && Files.exists(Path.of(rootPath, "flake.nix"))) {
+                    Task warmUp = new Task(null, "warmUp", Map.of(), null);
+                    worker.execute(() -> run(warmUp));
+                }
+                yield null;
+            }
+            case "$/setTrace" -> null;
             case "workspace/didChangeConfiguration" -> {
                 // { settings: { "nix-truffle": {...} } }, or the settings themselves
                 if (params.get("settings") instanceof Map<?, ?> st) {
@@ -886,8 +899,7 @@ public final class LspServer {
                 break;
             }
         }
-        int b = ps;
-        while (b > 0 && Character.isWhitespace(text.charAt(b - 1))) b--;
+        int b = significantBefore(text, ps);
         if (b == 0 || text.charAt(b - 1) != '{' && text.charAt(b - 1) != ';') return null;
         List<String> typed = components(text.substring(ps, wordStart));
         if (typed == null) return null;
@@ -898,6 +910,38 @@ public final class LspServer {
         List<String> path = new ArrayList<>(around);
         path.addAll(typed);
         return path;
+    }
+
+    /**
+     * Where the text before {@code pos} ends, without white space and comments ({@code #} to the
+     * end of a line, {@code /* *}{@code /}).
+     */
+    private static int significantBefore(String text, int pos) {
+        int b = pos;
+        while (true) {
+            while (b > 0 && Character.isWhitespace(text.charAt(b - 1))) b--;
+            if (b >= 2 && text.startsWith("*/", b - 2)) {
+                int open = text.lastIndexOf("/*", b - 2);
+                if (open < 0) return b;
+                b = open;
+                continue;
+            }
+            // A line comment: a `#` on this line that isn't in a string (roughly: an even number of quotes before it).
+            int lineStart = text.lastIndexOf('\n', Math.max(0, b - 1)) + 1;
+            String line = text.substring(lineStart, b);
+            int hash = -1;
+            boolean inString = false;
+            for (int i = 0; i < line.length(); i++) {
+                char ch = line.charAt(i);
+                if (ch == '"' && (i == 0 || line.charAt(i - 1) != '\\')) inString = !inString;
+                else if (ch == '#' && !inString) {
+                    hash = i;
+                    break;
+                }
+            }
+            if (hash < 0) return b;
+            b = lineStart + hash;
+        }
     }
 
     /** A typed attribute path's names ({@code services."a.b".} is services, a.b), or null. */
@@ -959,8 +1003,10 @@ public final class LspServer {
     private Value optionsAt(Doc doc, List<String> path) {
         if (optionsHelper == null) {
             optionsHelper = context.eval("nix", """
-                    resolver: path:
+                    resolver: pathJSON:
                     let
+                      # (a host array isn't a Nix list: `== [ ]` is false for an empty one)
+                      path = builtins.fromJSON pathJSON;
                       isOption = o: builtins.isAttrs o && (o._type or null) == "option";
                       at = opts: path:
                         if path == [ ] then opts
@@ -980,8 +1026,8 @@ public final class LspServer {
                     """);
         }
         try {
-            List<Object> p = new ArrayList<>(path);
-            Value v = optionsHelper.execute(resolver(doc), context.eval("nix", "x: x").execute(org.graalvm.polyglot.proxy.ProxyArray.fromList(p)));
+            List<Object> p = path.stream().map(x -> (Object) Bytes.fromJava(x)).toList();
+            Value v = optionsHelper.execute(resolver(doc), Bytes.toJava(Json.write(p)));
             return v.isNull() ? null : v;
         } catch (org.graalvm.polyglot.PolyglotException e) {
             log("options at " + path + ": " + e.getMessage());
@@ -1090,15 +1136,24 @@ public final class LspServer {
                 else { set = upstream; name = "<nixpkgs>"; };
               # Configurations without the module system's check that what is defined is declared:
               # one being edited often isn't, and its options would be an error.
-              unchecked = c: if c != null && c ? extendModules then c.extendModules { modules = [ { _module.check = false; } ]; } else c;
-              configurations = builtins.mapAttrs (_: unchecked) (if flake != null then flake.nixosConfigurations or { } else { });
+              # (home-manager sets _module.check itself: lib.mkForce false)
+              unchecked = c: if c != null && c ? extendModules
+                then c.extendModules { modules = [ { _module.check = { _type = "override"; priority = 50; content = false; }; } ]; }
+                else c;
+              # NixOS's configurations, and home-manager's.
+              raw = {
+                nixos = if flake != null then flake.nixosConfigurations or { } else { };
+                home = if flake != null then flake.homeConfigurations or { } else { };
+              };
+              configurations = builtins.mapAttrs (_: builtins.mapAttrs (_: unchecked)) raw;
             in {
               inherit scope configurations unchecked;
               packagesName = packages.name;
-              configurationNames = builtins.attrNames configurations;
+              configurationNames = builtins.mapAttrs (_: builtins.attrNames) configurations;
               flakePath = if flake != null then flake.outPath else null;
-              # The files a configuration imports: listing its options imports all of its modules.
-              imports = name: (__nixTruffle.importsDuring (_: builtins.attrNames configurations.${name}.options)).files;
+              # The files a configuration imports: listing its options imports all of its modules,
+              # in an evaluation of its own (one done before imported them already).
+              imports = kind: name: (__nixTruffle.importsDuring (_: builtins.attrNames (unchecked raw.${kind}.${name}).options)).files;
               # A NixOS module gets its configuration's pkgs; anything else the package set.
               resolver = nixos: module:
                 let
@@ -1165,9 +1220,11 @@ public final class LspServer {
     }
 
     /**
-     * The configuration for a document: a per-path setting ({@code configurations}: glob to
-     * expression), else the {@code nixos} setting, else the flake's configurations that import
-     * it (preferring one named in its path), else one named in its path, else the first.
+     * The configuration for a document (NixOS's or home-manager's): a per-path setting
+     * ({@code configurations}: glob to expression); else, of the kind the configurations that
+     * import it are (or its path says: home-manager's if it has `home-manager` or `home.nix`
+     * in it), the setting for that kind ({@code nixos}, {@code home}), else one of those that
+     * import it (one named in its path first), else one named in its path, else the first.
      */
     private Selection select(Doc doc) {
         String rel = relative(doc);
@@ -1180,33 +1237,41 @@ public final class LspServer {
                 }
             }
         }
-        String nixos = setting("nixos");
-        if (nixos != null) return selection("expr:" + nixos, unchecked(inScope(nixos)), module, "`" + nixos + "`");
-        List<String> names = new ArrayList<>();
-        Value configs = null;
+        Map<String, List<String>> names = new LinkedHashMap<>();
         try {
             Value ns = session().getMember("configurationNames");
-            for (long i = 0; i < ns.getArraySize(); i++) names.add(ns.getArrayElement(i).asString());
-            configs = session().getMember("configurations");
+            for (String kind : List.of("nixos", "home")) {
+                List<String> list = new ArrayList<>();
+                Value kindNames = ns.getMember(kind);
+                for (long i = 0; i < kindNames.getArraySize(); i++) list.add(kindNames.getArrayElement(i).asString());
+                names.put(kind, list);
+            }
         } catch (org.graalvm.polyglot.PolyglotException e) {
             if (e.isInterrupted() || e.isCancelled()) throw e;
-            log("NixOS configurations: " + e.getMessage());
+            log("configurations: " + e.getMessage());
+            names.put("nixos", List.of());
+            names.put("home", List.of());
         }
-        if (names.isEmpty()) return selection("none", null, module, null);
+        int count = names.get("nixos").size() + names.get("home").size();
+        List<String> importing = count > 1 && rel != null && (module || importsOf != null) ? importing(rel) : List.of();
+        if (!importing.isEmpty()) module = true;
+        String kind = !importing.isEmpty() ? importing.getFirst().substring(0, importing.getFirst().indexOf(':'))
+                : names.get("nixos").isEmpty() && !names.get("home").isEmpty() || rel != null && (rel.contains("home-manager") || rel.endsWith("home.nix")) && !names.get("home").isEmpty() ? "home"
+                : "nixos";
+        String setting = setting(kind);
+        if (setting != null) return selection("expr:" + setting, unchecked(inScope(setting)), module, "`" + setting + "`");
+        List<String> kindNames = names.get(kind);
+        if (kindNames.isEmpty()) return selection("none", null, module, null);
         List<String> named = new ArrayList<>();
         for (Path p = Path.of(URI.create(doc.uri)).getParent(); p != null; p = p.getParent()) {
-            if (p.getFileName() != null && names.contains(p.getFileName().toString())) named.add(p.getFileName().toString());
+            if (p.getFileName() != null && kindNames.contains(p.getFileName().toString())) named.add(p.getFileName().toString());
         }
-        String name = null;
-        if (names.size() > 1 && rel != null && (module || importsOf != null)) {
-            List<String> importing = importing(rel);
-            if (!importing.isEmpty()) {
-                module = true;
-                name = importing.stream().filter(named::contains).findFirst().orElse(importing.getFirst());
-            }
-        }
-        if (name == null) name = !named.isEmpty() ? named.getFirst() : names.getFirst();
-        return selection("config:" + name, configs.getMember(name), module, "`nixosConfigurations." + name + "`");
+        List<String> imported = importing.stream().filter(k -> k.startsWith(kind + ":")).map(k -> k.substring(kind.length() + 1)).toList();
+        String name = !imported.isEmpty() ? imported.stream().filter(named::contains).findFirst().orElse(imported.getFirst())
+                : !named.isEmpty() ? named.getFirst() : kindNames.getFirst();
+        Value configuration = session().getMember("configurations").getMember(kind).getMember(name);
+        String label = "`" + (kind.equals("home") ? "homeConfigurations." : "nixosConfigurations.") + name + "`";
+        return selection(kind + ":" + name, configuration, module, label);
     }
 
     private Selection selection(String key, Value nixos, boolean module, String configuration) {
@@ -1215,17 +1280,21 @@ public final class LspServer {
         return new Selection(key + (module ? ":module" : ""), nixos, module, label);
     }
 
-    /** The names of the configurations that import the workspace file {@code rel}. */
+    /** The configurations ({@code nixos:name}, {@code home:name}) that import the workspace file {@code rel}. */
     private List<String> importing(String rel) {
         if (importsOf == null) {
             long t = System.nanoTime();
             importsOf = new LinkedHashMap<>();
-            Value names = session().getMember("configurationNames");
-            for (long i = 0; i < names.getArraySize(); i++) {
-                String n = names.getArrayElement(i).asString();
+            Value all = session().getMember("configurationNames");
+            List<String> keys = new ArrayList<>();
+            for (String kind : List.of("nixos", "home")) {
+                Value names = all.getMember(kind);
+                for (long i = 0; i < names.getArraySize(); i++) keys.add(kind + ":" + names.getArrayElement(i).asString());
+            }
+            for (String n : keys) {
                 Set<String> files = new HashSet<>();
                 try {
-                    Value fs = session().getMember("imports").execute(n);
+                    Value fs = session().getMember("imports").execute(n.substring(0, n.indexOf(':')), n.substring(n.indexOf(':') + 1));
                     for (long j = 0; j < fs.getArraySize(); j++) files.add(fs.getArrayElement(j).asString());
                 } catch (org.graalvm.polyglot.PolyglotException e) {
                     if (e.isInterrupted() || e.isCancelled()) {
@@ -1236,7 +1305,7 @@ public final class LspServer {
                 }
                 importsOf.put(n, files);
             }
-            log("what the NixOS configurations import: " + importsOf.size() + " in " + (System.nanoTime() - t) / 1_000_000 + " ms");
+            log("what the configurations import: " + importsOf.size() + " in " + (System.nanoTime() - t) / 1_000_000 + " ms");
         }
         Value flakePath = session().getMember("flakePath");
         if (flakePath.isNull()) return List.of();

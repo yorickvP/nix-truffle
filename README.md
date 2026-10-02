@@ -420,13 +420,14 @@ LSP client: run `nix-truffle lsp` for files of type `nix`. It knows Nix the way 
   sets, `with`), with the file's functions applied to what they would likely get. Only what the
   cursor needs is evaluated: `pkgs.hel` completes in 0.4 s from a cold start, NixOS options in
   about a second, later ones at once. What a file gets:
-  - a NixOS module (a file a configuration imports, or a function of `config`, `options` or
-    `pkgs` and `...`): a NixOS configuration's `config`, `options`, `pkgs` and `lib`. Which one:
-    the one that imports the file (listing each configuration's options records the files it
-    imports, once, a couple of seconds for seven machines; one named in the file's path among
-    them, `machines/frumar/...`), else one named in its path, else the first. Configurations
-    are evaluated without the check that what is defined is declared, which one being edited
-    often fails;
+  - a module (a file a configuration imports, or a function of `config`, `options` or `pkgs`
+    and `...`): a configuration's `config`, `options`, `pkgs` and `lib`, NixOS's
+    (`nixosConfigurations`) or home-manager's (`homeConfigurations`). Which one: one that
+    imports the file (listing each configuration's options records the files it imports, in the
+    background from the start, a few seconds for seven machines and a home; one named in the
+    file's path among them, `machines/frumar/...`), else one named in its path (home-manager's
+    for a path with `home-manager` or `home.nix`), else the first. Configurations are evaluated
+    without the check that what is defined is declared, which one being edited often fails;
   - anything else (packages, overlays, ...): the package set, the flake's
     `legacyPackages.${system}`, else nixpkgs with the flake's overlays, else its `nixpkgs`
     input, else `<nixpkgs>`; names by callPackage's rules (then `python3Packages`'), an
@@ -458,14 +459,15 @@ expressions in a scope with the workspace's `flake`, its `inputs`, `system` and 
 {
   "nixpkgs": "flake.legacyPackages.${system}",
   "nixos": "flake.nixosConfigurations.frumar",
+  "home": "flake.homeConfigurations.x86_64-linux",
   "configurations": { "nixos/roles/**": "flake.nixosConfigurations.frumar" },
   "evalTimeout": 10
 }
 ```
 
 `nixpkgs` is the package set (`"upstream"`, or `"import inputs.nixpkgs { inherit system; overlays
-= [ flake.overlays.default ]; }"`), `nixos` the configuration for every module, `configurations`
-one for the files a glob matches. Evaluation errors go to the client's log. `tests/lsp.py` is a
+= [ flake.overlays.default ]; }"`), `nixos` and `home` the configuration for every NixOS or
+home-manager module, `configurations` one for the files a glob matches. Evaluation errors go to the client's log. `tests/lsp.py` is a
 scripted session.
 
 Compared with nixd (2.9.2, the same scripted sessions): the same completion of `pkgs`, `lib` and

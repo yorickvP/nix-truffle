@@ -307,6 +307,7 @@ let cfg = config.services.nginx; in {
         return labels(r)
 
     check("options", complete("services.openssh.enable = true;", "services.ngi", "ngi\n", 3), ["nginx", "ngircd"])
+    check("options at a module's top", "services" in complete("services.openssh.enable = true;", "servi", "ervi\n", 4), True)
     check("options in a set", complete("firewall.allowedTCPPorts = [ 22 ];", "firewall.allowedTC", "allowedTC", 9), ["allowedTCPPortRanges", "allowedTCPPorts"])
     check("options in a submodule", complete('locations."/".proxyPass = "x";', 'locations."/".proxyP', "proxyP", 6), ["proxyPass"])
     check("options under config and mkIf", complete("boot.loader.systemd-boot.enable = true;", "boot.loader.syst", "syst }", 4), ["systemd-boot"])
@@ -342,6 +343,11 @@ let cfg = config.services.nginx; in {
     legacyPackages.${system} = import nixpkgs { inherit system; overlays = [ self.overlays.default ]; };
     nixosConfigurations.alpha = nixpkgs.lib.nixosSystem { inherit system; modules = [ base ./alpha.nix ]; };
     nixosConfigurations.beta = nixpkgs.lib.nixosSystem { inherit system; modules = [ base ./beta.nix ./shared/thing.nix ]; };
+    # home-manager's are modules too (as homeManagerConfiguration makes them)
+    homeConfigurations.me = nixpkgs.lib.evalModules { modules = [ ./dots/main.nix ({ lib, ... }: {
+      options.homeOnly = lib.mkOption { type = lib.types.bool; default = false; description = "Only home has this."; };
+      config._module.args.pkgs = import nixpkgs { inherit system; };
+    }) ]; };
   };
 }
 """ % nixpkgs)
@@ -351,6 +357,8 @@ let cfg = config.services.nginx; in {
     (fl / "shared" / "thing.nix").write_text("{ config, ... }: {\n  beta.only = true;\n}\n")
     (fl / "pkgs" / "foo.nix").write_text("{ stdenv, myHello }:\nmyHello.name\n")
     (fl / "overlay.nix").write_text("final: prev: {\n  x = prev.hello;\n}\n")
+    (fl / "dots").mkdir()
+    (fl / "dots" / "main.nix").write_text("{ config, pkgs, ... }: {\n  # a comment\n  homeOnly = true;\n}\n")
 
     def session(settings=None):
         c = Client()
@@ -376,6 +384,8 @@ let cfg = config.services.nginx; in {
     check("a package from the flake's package set", complete_in(c, "pkgs/foo.nix", "myHello.name", "myHello.nam", "nam\n", 3), ["name"])
     check("said in hover", evaluated_with(c, "pkgs/foo.nix", "name", 1), "`legacyPackages.x86_64-linux`")
     check("an overlay's prev", "hello" in complete_in(c, "overlay.nix", "prev.hello", "prev.hel", "hel;", 3), True)
+    check("home-manager's options", complete_in(c, "dots/main.nix", "homeOnly = true;", "homeO", "O\n", 1), ["homeOnly"])
+    check("said in hover", evaluated_with(c, "dots/main.nix", "homeOnly", 2), "`homeConfigurations.me` (its `pkgs`)")
     # A module saved with another option: evaluated again.
     (fl / "beta.nix").write_text(declares % ("beta.other", "Beta's other one."))
     c.notify("textDocument/didSave", {"textDocument": {"uri": (fl / "beta.nix").as_uri()}})
