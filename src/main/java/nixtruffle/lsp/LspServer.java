@@ -193,7 +193,8 @@ public final class LspServer {
     }
 
     /** The requests that may evaluate. */
-    private static final Set<String> EVALUATING = Set.of("textDocument/completion", "textDocument/hover", "textDocument/definition", "completionItem/resolve");
+    private static final Set<String> EVALUATING = Set.of("textDocument/completion", "textDocument/hover", "textDocument/definition", "completionItem/resolve",
+            "textDocument/inlayHint");
 
     /** The document a request is about, as it is now. */
     private Doc docOf(String method, Map<String, Object> params) {
@@ -282,6 +283,7 @@ public final class LspServer {
             case "textDocument/completion" -> at(task, this::completion);
             case "textDocument/hover" -> at(task, this::hover);
             case "textDocument/definition" -> at(task, this::definition);
+            case "textDocument/inlayHint" -> inlayHints(task);
             case "diagnose" -> {
                 diagnose(task.doc);
                 yield null;
@@ -375,6 +377,7 @@ public final class LspServer {
                         "definitionProvider", true,
                         "referencesProvider", true,
                         "documentHighlightProvider", true,
+                        "inlayHintProvider", true,
                         "codeActionProvider", obj("codeActionKinds", List.of("quickfix")),
                         "documentSymbolProvider", true,
                         "renameProvider", obj("prepareProvider", true),
@@ -1182,6 +1185,93 @@ public final class LspServer {
             items.add(item(label, 12, String.join(".", path) + "." + name));
         }
         return items.isEmpty() ? null : items;
+    }
+
+    // ------------------------------------------------------------ inlay hints
+
+    /** Versions found (by what was evaluated: `pkgs.hello`, a with's name), until a reload. */
+    private final Map<String, String> versions = new HashMap<>();
+    private Value versionOf;
+
+    /**
+     * Inlay hints in a range: the version of the packages named there, by a dotted path
+     * ({@code pkgs.hello}) or from a {@code with} ({@code with pkgs; [ htop ]}).
+     */
+    private Object inlayHints(Task task) {
+        Doc doc = task.doc;
+        if (doc == null || doc.root == null) return List.of();
+        Map<String, Object> r = Json.obj(task.params.get("range"));
+        Map<String, Object> st = Json.obj(r.get("start")), en = Json.obj(r.get("end"));
+        int from = doc.lines.offset(((Number) st.get("line")).intValue(), ((Number) st.get("character")).intValue());
+        int to = doc.lines.offset(((Number) en.get("line")).intValue(), ((Number) en.get("character")).intValue());
+        List<Object> hints = new ArrayList<>();
+        Map<String, Value> parents = new HashMap<>();
+        // pkgs.hello, pkgs.python3Packages.requests: a variable's attributes
+        List<Expr.Select> selects = new ArrayList<>();
+        selectsIn(doc.root, from, to, selects);
+        for (Expr.Select sel : selects) {
+            if (hints.size() >= 200) break;
+            if (!(sel.target() instanceof Expr.Var v) || sel.fallback() != null || List.of("lib", "builtins", "config", "options").contains(v.name())) continue;
+            List<String> names = new ArrayList<>();
+            for (Expr.AttrKey k : sel.path()) names.add(k.name());
+            if (names.contains(null)) continue;
+            String full = v.name() + "." + String.join(".", names);
+            // (a selection's position is its `.`, as CppNix's errors have it)
+            int start = v.pos();
+            if (!doc.text.startsWith(full, start)) continue;
+            String parent = v.name() + (names.size() > 1 ? "." + String.join(".", names.subList(0, names.size() - 1)) : "");
+            String version = versions.computeIfAbsent(full, k -> {
+                Value p = parents.computeIfAbsent(parent, x -> evaluate(doc, start, start, x));
+                return p == null ? "" : version(p, names.getLast());
+            });
+            if (!version.isEmpty()) hints.add(hint(doc, start + full.length(), version));
+        }
+        // with pkgs; [ htop ]: names from a with
+        if (doc.scopes != null) {
+            for (Scopes.Use u : doc.scopes.uses) {
+                if (hints.size() >= 200) break;
+                if (u.kind() != Scopes.Kind.WITH || u.pos() < from || u.pos() > to) continue;
+                String version = versions.computeIfAbsent("with " + u.name(), k -> {
+                    Value env = withDefining(doc, u.pos(), u.name());
+                    return env == null ? "" : version(env, u.name());
+                });
+                if (!version.isEmpty()) hints.add(hint(doc, u.pos() + u.name().length(), version));
+            }
+        }
+        return hints;
+    }
+
+    /** A package's version (or "" for what isn't one). */
+    private String version(Value parent, String name) {
+        try {
+            if (versionOf == null) versionOf = context.eval("nix", """
+                    parent: name:
+                    let
+                      safe = x: let r = builtins.tryEval x; in if r.success then r.value else null;
+                      v = parent.${name} or null;
+                      drv = builtins.isAttrs v && (v.type or null) == "derivation";
+                      version = safe (v.version or (builtins.parseDrvName v.name).version);
+                    in if drv && builtins.isString version then version else ""
+                    """);
+            return versionOf.execute(parent, name).asString();
+        } catch (org.graalvm.polyglot.PolyglotException e) {
+            if (e.isInterrupted() || e.isCancelled()) throw e;
+            return "";
+        }
+    }
+
+    private Map<String, Object> hint(Doc doc, int at, String version) {
+        return obj("position", doc.lines.position(at), "label", Bytes.fromJava(version), "kind", 1L, "paddingLeft", true);
+    }
+
+    /** The selections from {@code from} to {@code to}, outermost (`pkgs.a.b`, not its parts). */
+    private static void selectsIn(Expr e, int from, int to, List<Expr.Select> out) {
+        if (e instanceof Expr.Select sel && sel.target().pos() >= from && sel.target().pos() <= to) {
+            out.add(sel);
+            if (sel.fallback() != null) selectsIn(sel.fallback(), from, to, out);
+            return;
+        }
+        for (Expr c : Scopes.children(e)) selectsIn(c, from, to, out);
     }
 
     // ------------------------------------------------------------ evaluated diagnostics
@@ -2088,6 +2178,8 @@ public final class LspServer {
         noArguments = null;
         classify = null;
         checker = null;
+        versions.clear();
+        versionOf = null;
         definitionIn = null;
         Context old = context;
         context = contexts.get();
