@@ -401,6 +401,7 @@ public final class LspServer {
                         "inlayHintProvider", true,
                         "codeActionProvider", obj("codeActionKinds", List.of("quickfix")),
                         "documentSymbolProvider", true,
+                        "documentFormattingProvider", true,
                         "renameProvider", obj("prepareProvider", true),
                         "hoverProvider", true,
                         "completionProvider", obj("triggerCharacters", List.of("."), "resolveProvider", true)),
@@ -463,6 +464,7 @@ public final class LspServer {
             case "textDocument/references" -> at(params, this::references);
             case "textDocument/documentHighlight" -> at(params, this::highlight);
             case "textDocument/codeAction" -> codeActions(params);
+            case "textDocument/formatting" -> format(docs.get(Bytes.toJava(Json.str(Json.obj(params.get("textDocument")).get("uri")))));
             case "textDocument/prepareRename" -> at(params, (doc, offset) -> prepareRename(doc, offset));
             case "textDocument/rename" -> at(params, (doc, offset) -> rename(doc, offset, Bytes.toJava(Json.str(params.get("newName")))));
             case "textDocument/documentSymbol" -> {
@@ -845,6 +847,72 @@ public final class LspServer {
     }
 
     /** A request that can't be done, for the reason in its message (an LSP RequestFailed). */
+    // ------------------------------------------------------------ formatting
+
+    /**
+     * The document formatted by the {@code formatter} setting's command (nixfmt), from its
+     * standard input to its output (it never writes the file): as one edit, of what changed.
+     */
+    private Object format(Doc doc) {
+        if (doc == null) return List.of();
+        List<String> command = new ArrayList<>();
+        Object setting = initOptions.get("formatter");
+        if (setting instanceof List<?> l) for (Object x : l) command.add(Bytes.toJava((String) x));
+        else if (setting instanceof String c) command.addAll(List.of(Bytes.toJava(c).trim().split("\\s+")));
+        if (command.isEmpty() || command.getFirst().isEmpty()) command = List.of("nixfmt");
+        String formatted;
+        try {
+            ProcessBuilder pb = new ProcessBuilder(command);
+            if (rootPath != null) pb.directory(new java.io.File(rootPath));
+            Process p = pb.start();
+            var err = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                try {
+                    return new String(p.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
+                } catch (IOException e) {
+                    return "";
+                }
+            });
+            Thread.ofVirtual().start(() -> {
+                try (var in = p.getOutputStream()) {
+                    in.write(doc.text.getBytes(StandardCharsets.UTF_8));
+                } catch (IOException e) {
+                    // (it exited early: its error says why)
+                }
+            });
+            var out = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                try {
+                    return new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+                } catch (IOException e) {
+                    return "";
+                }
+            });
+            if (!p.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                p.destroyForcibly();
+                throw new Refused(command.getFirst() + " took longer than 10 s");
+            }
+            formatted = out.get();
+            if (p.exitValue() != 0) {
+                String message = err.get().strip();
+                throw new Refused(command.getFirst() + ": " + (message.isEmpty() ? "exit status " + p.exitValue() : message));
+            }
+        } catch (IOException e) {
+            throw new Refused("can't run " + command.getFirst() + " (the formatter setting): " + e.getMessage());
+        } catch (InterruptedException | java.util.concurrent.ExecutionException e) {
+            throw new Refused(String.valueOf(e));
+        }
+        String text = doc.text;
+        if (formatted.equals(text)) return List.of();
+        // one edit, of what's between what they start and end with alike (not a pair's half)
+        int pre = 0, max = Math.min(text.length(), formatted.length());
+        while (pre < max && text.charAt(pre) == formatted.charAt(pre)) pre++;
+        if (pre > 0 && Character.isHighSurrogate(text.charAt(pre - 1))) pre--;
+        int suf = 0;
+        while (suf < max - pre && text.charAt(text.length() - 1 - suf) == formatted.charAt(formatted.length() - 1 - suf)) suf++;
+        if (suf > 0 && Character.isLowSurrogate(text.charAt(text.length() - suf))) suf--;
+        return List.of(obj("range", obj("start", doc.lines.position(pre), "end", doc.lines.position(text.length() - suf)),
+                "newText", Bytes.fromJava(formatted.substring(pre, formatted.length() - suf))));
+    }
+
     private static final class Refused extends RuntimeException {
         Refused(String message) {
             super(message);

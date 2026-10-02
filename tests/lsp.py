@@ -315,6 +315,22 @@ cancel_id = send_at("textDocument/completion", slow, stext, "a t.b")
 time.sleep(0.2)
 c.notify("$/cancelRequest", {"id": cancel_id})
 check("cancelled", answer(cancel_id).get("error", {}).get("code"), -32800)
+
+# Formatting: the formatter's output for the text, as one edit of what changed.
+ftext = "{\n  a  = 1;\n  b = \"é\";\n  c  = 2;\n}\n"
+fmt = (tmp / "fmt.nix").as_uri()
+c.open(fmt, ftext)
+c.notify("workspace/didChangeConfiguration", {"settings": {"nix-truffle": {"formatter": ["sed", "-e", "s/  =/ =/"]}}})
+check("formatting", c.request("textDocument/formatting", {"textDocument": {"uri": fmt}, "options": {"tabSize": 2, "insertSpaces": True}}),
+      [{"range": {"start": {"line": 1, "character": 4}, "end": {"line": 3, "character": 4}}, "newText": "= 1;\n  b = \"é\";\n  c"}])
+c.notify("workspace/didChangeConfiguration", {"settings": {"nix-truffle": {"formatter": "cat"}}})
+check("formatted already", c.request("textDocument/formatting", {"textDocument": {"uri": fmt}, "options": {"tabSize": 2, "insertSpaces": True}}), [])
+c.notify("workspace/didChangeConfiguration", {"settings": {"nix-truffle": {"formatter": ["sh", "-c", "echo 'bad syntax' >&2; exit 1"]}}})
+try:
+    c.request("textDocument/formatting", {"textDocument": {"uri": fmt}, "options": {"tabSize": 2, "insertSpaces": True}})
+    check("a formatter's error", None, "an error")
+except RuntimeError as e:
+    check("a formatter's error", e.args[0]["message"], "sh: bad syntax")
 c.request("shutdown", None)
 c.notify("exit", None)
 

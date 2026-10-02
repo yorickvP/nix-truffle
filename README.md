@@ -467,6 +467,8 @@ LSP client: run `nix-truffle lsp` for files of type `nix`. It knows Nix the way 
     ready and after a reload;
   - quick fixes (code actions): the name a "did you mean" meant, the `;` (or bracket, quote) a
     syntax error misses;
+  - formatting, by the `formatter` setting's command (default `nixfmt`), which reads the
+    document on its standard input (the file isn't written);
   - go to definition of attributes: a package's `meta.position`, an option's declarations, a
     function's own position, else the attribute's.
 
@@ -497,7 +499,8 @@ expressions in a scope with the workspace's `flake`, its `inputs`, `system` and 
   "nixos": "flake.nixosConfigurations.frumar",
   "home": "flake.homeConfigurations.x86_64-linux",
   "configurations": { "nixos/roles/**": "flake.nixosConfigurations.frumar" },
-  "evalTimeout": 10
+  "evalTimeout": 10,
+  "formatter": ["nixfmt"]
 }
 ```
 
@@ -517,7 +520,7 @@ Compared with nixd (2.9.2, the same scripted sessions): the same completion of `
 NixOS options, hover and definitions of options and packages; nix-truffle also completes what
 it evaluates in the file's own scope (`cfg.`, a local set's attributes), where nixd evaluates
 fixed expressions only, and needs no configuration for a flake's machines; nixd also has
-formatting, folding, inlay hints and code actions (quick fixes).
+folding.
 
 ## `builtins.wasm`
 
